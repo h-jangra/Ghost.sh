@@ -15,7 +15,7 @@ const GHOST_COLOR: Color = Color::Rgb {
     r: 80,
     g: 80,
     b: 80,
-};
+}; // Much dimmer than grey
 
 struct GhostCompletion {
     history: VecDeque<String>,
@@ -60,7 +60,7 @@ impl GhostCompletion {
             return None;
         }
 
-        // prefix match only
+        // Only match commands that start with the exact input (prefix match only)
         for command in self.history.iter().rev() {
             if command.starts_with(input) && command.len() > input.len() {
                 return Some(command.clone());
@@ -100,16 +100,9 @@ impl GhostCompletion {
 
     fn accept_ghost_text(&mut self) {
         if let Some(ghost) = &self.ghost_text {
-            let remaining = &ghost[self.current_input.len()..];
-            self.current_input.push_str(remaining);
+            self.current_input = ghost.clone();
             self.cursor_position = self.current_input.len();
             self.ghost_text = None;
-        }
-    }
-
-    fn move_cursor_right(&mut self) {
-        if self.cursor_position < self.current_input.len() {
-            self.cursor_position += 1;
         }
     }
 
@@ -194,7 +187,7 @@ impl GhostCompletion {
             eprintln!("Warning: Could not load bash history: {}", e);
         }
 
-        println!("Ghost Completion Shell");
+        println!("Fish-like Ghost Completion Shell");
         println!("Type 'exit' or press Ctrl+D to quit");
         println!();
 
@@ -248,18 +241,9 @@ impl GhostCompletion {
                             }
                             break;
                         }
-                        KeyCode::Right => {
-                            // Right arrow accepts ghost text if available, otherwise moves cursor
-                            if self.ghost_text.is_some() {
-                                self.accept_ghost_text();
-                            } else {
-                                self.move_cursor_right();
-                            }
-                        }
-                        KeyCode::Tab => {
-                            if self.ghost_text.is_some() {
-                                self.accept_ghost_text();
-                            }
+                        KeyCode::Tab | KeyCode::Right => {
+                            // Both Tab and Right arrow accept ghost text
+                            self.accept_ghost_text();
                         }
                         KeyCode::Backspace => {
                             self.delete_char();

@@ -1,9 +1,9 @@
 [package]
-name = "ghost-completion"
+name = "ghostsh"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-crossterm = "0.27.0"
-dirs = "4.0.0"
+crossterm = "0.27"
+dirs = "5.0"
 regex = "1"
