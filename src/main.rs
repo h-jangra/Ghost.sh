@@ -6,16 +6,24 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
 };
 use std::collections::VecDeque;
+use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::{exit, Command};
+use std::path::PathBuf;
+use std::process::exit;
+use std::process::Command;
 
 const HISTORY_SIZE: usize = 1000;
 const GHOST_COLOR: Color = Color::Rgb {
     r: 80,
     g: 80,
     b: 80,
-}; // Much dimmer than grey
+};
+
+const ANSI_COLOR_BLUE: &str = "\x1b[34m";
+const ANSI_COLOR_RESET: &str = "\x1b[0m";
+
+const PROMPT_ARROW: &str = "❱";
 
 struct GhostCompletion {
     history: VecDeque<String>,
@@ -55,12 +63,58 @@ impl GhostCompletion {
         Ok(())
     }
 
+    fn visible_length(s: &str) -> usize {
+        let mut count = 0;
+        let mut in_ansi = false;
+
+        for c in s.chars() {
+            if c == '\x1b' {
+                in_ansi = true;
+                continue;
+            }
+
+            if in_ansi {
+                if c.is_alphabetic() || c.is_ascii_control() {
+                    if c.is_alphabetic() {
+                        in_ansi = false;
+                    } else if c.is_ascii_control() && c != '[' && c != ';' {
+                        in_ansi = false;
+                    }
+                }
+                continue;
+            }
+
+            if !c.is_control() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn get_prompt(&self) -> String {
+        let current_dir = env::current_dir().unwrap_or_default();
+        let dir_name = current_dir
+            .file_name()
+            .unwrap_or_else(|| current_dir.as_os_str())
+            .to_string_lossy();
+
+        let mut prompt = format!(
+            "{blue}{}{reset} ",
+            dir_name,
+            blue = ANSI_COLOR_BLUE,
+            reset = ANSI_COLOR_RESET,
+        );
+
+        prompt.push_str(&format!("{prompt_arrow} ", prompt_arrow = PROMPT_ARROW));
+
+        prompt
+    }
+
     fn find_best_match(&self, input: &str) -> Option<String> {
         if input.is_empty() {
             return None;
         }
 
-        // Only match commands that start with the exact input (prefix match only)
         for command in self.history.iter().rev() {
             if command.starts_with(input) && command.len() > input.len() {
                 return Some(command.clone());
@@ -99,8 +153,8 @@ impl GhostCompletion {
     }
 
     fn accept_ghost_text(&mut self) {
-        if let Some(ghost) = &self.ghost_text {
-            self.current_input = ghost.clone();
+        if let Some(ghost) = self.ghost_text.clone() {
+            self.current_input = ghost;
             self.cursor_position = self.current_input.len();
             self.ghost_text = None;
         }
@@ -112,11 +166,13 @@ impl GhostCompletion {
         self.ghost_text = None;
     }
 
-    fn draw_prompt(&self) -> io::Result<()> {
+    fn draw_prompt(&mut self) -> io::Result<()> {
         let mut stdout = io::stdout();
 
+        let current_prompt = self.get_prompt();
+
         execute!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-        execute!(stdout, Print("> "), Print(&self.current_input))?;
+        execute!(stdout, Print(&current_prompt), Print(&self.current_input))?;
 
         if let Some(ghost) = &self.ghost_text {
             if ghost.len() > self.current_input.len() {
@@ -130,41 +186,91 @@ impl GhostCompletion {
             }
         }
 
-        let cursor_display_pos = 2 + self.cursor_position as u16;
+        let prompt_visible_len = Self::visible_length(&current_prompt);
+        let cursor_display_pos = prompt_visible_len as u16 + self.cursor_position as u16;
         execute!(stdout, MoveToColumn(cursor_display_pos))?;
 
         stdout.flush()?;
         Ok(())
     }
 
-    fn execute_command(&self, command: &str) -> io::Result<()> {
-        if command.trim().is_empty() {
+    fn execute_command(&mut self, command: &str) -> io::Result<()> {
+        let command_trimmed = command.trim();
+        if command_trimmed.is_empty() {
             return Ok(());
         }
 
-        // For shell builtins or complex commands, use system shell
-        if command.contains('|')
-            || command.contains('>')
-            || command.contains('&')
-            || command.contains('$')
-        {
-            let status = Command::new("sh").arg("-c").arg(command).status()?;
+        let parts: Vec<&str> = command_trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
 
-            if !status.success() {
-                eprintln!("Command failed with exit code: {}", status);
+        if parts[0] == "history" {
+            for (i, cmd) in self.history.iter().enumerate() {
+                println!(" {:4}  {}", i + 1, cmd);
             }
-        } else {
-            // Parse simple commands
-            let parts: Vec<&str> = command.split_whitespace().collect();
-            if parts.is_empty() {
-                return Ok(());
-            }
+            return Ok(());
+        }
 
-            let status = Command::new(parts[0]).args(&parts[1..]).status()?;
+        if parts[0] == "cd" {
+            let target_arg = parts.get(1).map(|s| s.to_string());
 
-            if !status.success() {
-                eprintln!("Command failed with exit code: {}", status);
+            let target_dir = match target_arg {
+                None => dirs::home_dir().expect("Home directory not found"),
+                Some(p) => {
+                    if p == "~" || p.starts_with("~/") {
+                        let home = dirs::home_dir().expect("Home directory not found");
+                        if p.len() > 1 {
+                            home.join(&p[2..])
+                        } else {
+                            home
+                        }
+                    } else {
+                        PathBuf::from(p)
+                    }
+                }
+            };
+
+            if let Err(e) = env::set_current_dir(&target_dir) {
+                eprintln!("cd: {}: {}", target_dir.display(), e);
             }
+            return Ok(());
+        }
+
+        if parts[0] == "z" {
+            let z_args = parts.get(1..).unwrap_or(&[]);
+
+            let zoxide_result = Command::new("zoxide").arg("query").args(z_args).output();
+
+            match zoxide_result {
+                Ok(output) => {
+                    if output.status.success() {
+                        let target_path =
+                            String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                        if let Err(e) = env::set_current_dir(&target_path) {
+                            eprintln!(
+                                "zoxide: failed to change directory to {}: {}",
+                                target_path, e
+                            );
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                        eprintln!("z: command failed. {}", stderr);
+                    }
+                }
+                Err(e) => eprintln!("Failed to execute zoxide: {}", e),
+            }
+            return Ok(());
+        }
+
+        let status = Command::new("bash")
+            .arg("-ic")
+            .arg(command_trimmed)
+            .status()?;
+
+        if !status.success() {
+            eprintln!("Command failed with exit code: {}", status);
         }
 
         Ok(())
@@ -182,20 +288,19 @@ impl GhostCompletion {
     }
 
     fn run_shell(&mut self) -> io::Result<()> {
-        // Load actual bash history
         if let Err(e) = self.load_bash_history() {
             eprintln!("Warning: Could not load bash history: {}", e);
         }
 
         println!("Fish-like Ghost Completion Shell");
-        println!("Type 'exit' or press Ctrl+D to quit");
-        println!();
+        println!("Type 'exit' or press Ctrl+D to quit. Use Ctrl+L to clear screen.");
 
         loop {
             terminal::enable_raw_mode()?;
 
             self.clear_input();
-            println!(); // Separate from previous output
+
+            execute!(io::stdout(), Print("\n"))?;
 
             let mut should_exit = false;
 
@@ -219,30 +324,30 @@ impl GhostCompletion {
                                 break;
                             }
                         }
+                        KeyCode::Char('l') if modifiers == KeyModifiers::CONTROL => {
+                            execute!(io::stdout(), Clear(ClearType::All), MoveToColumn(1))?;
+                        }
                         KeyCode::Enter => {
-                            println!();
-                            if !self.current_input.trim().is_empty() {
-                                let command = self.current_input.clone();
+                            let command = self.current_input.clone();
 
-                                // Check for exit command
-                                if command.trim() == "exit" || command.trim() == "quit" {
-                                    should_exit = true;
-                                    break;
-                                }
+                            terminal::disable_raw_mode()?;
 
-                                // Add to history and execute
-                                self.add_to_history(command.clone());
-
-                                terminal::disable_raw_mode()?;
-                                if let Err(e) = self.execute_command(&command) {
-                                    eprintln!("Error executing command: {}", e);
-                                }
-                                terminal::enable_raw_mode()?;
+                            if command.trim() == "exit" || command.trim() == "quit" {
+                                should_exit = true;
+                                break;
                             }
+
+                            self.add_to_history(command.clone());
+
+                            execute!(io::stdout(), Print("\r\n"))?;
+
+                            if let Err(e) = self.execute_command(&command) {
+                                eprintln!("Error executing command: {}", e);
+                            }
+
                             break;
                         }
                         KeyCode::Tab | KeyCode::Right => {
-                            // Both Tab and Right arrow accept ghost text
                             self.accept_ghost_text();
                         }
                         KeyCode::Backspace => {
@@ -250,6 +355,18 @@ impl GhostCompletion {
                         }
                         KeyCode::Left => {
                             self.move_cursor_left();
+                        }
+                        KeyCode::Delete => {
+                            if self.cursor_position < self.current_input.len() {
+                                self.current_input.remove(self.cursor_position);
+                                self.update_ghost_text();
+                            }
+                        }
+                        KeyCode::Home => {
+                            self.cursor_position = 0;
+                        }
+                        KeyCode::End => {
+                            self.cursor_position = self.current_input.len();
                         }
                         KeyCode::Char(c) => {
                             self.insert_char(c);
@@ -277,10 +394,10 @@ fn main() -> io::Result<()> {
     let mut ghost_completion = GhostCompletion::new();
 
     if let Err(e) = ghost_completion.run_shell() {
+        let _ = terminal::disable_raw_mode();
         eprintln!("Error: {}", e);
         exit(1);
     }
 
-    println!("Goodbye!");
     Ok(())
 }

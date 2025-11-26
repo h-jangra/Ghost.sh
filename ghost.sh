@@ -1,67 +1,32 @@
-# ghostsh.sh
+enable -f ./target/release/libghostsh.so ghost_mod
 
-# Path to your Rust binary
-GHOSTSH_BIN="${GHOSTSH_BIN:-ghostsh}"
+_ghost_completion_hook() {
+    local current_word="${READLINE_LINE:0:READLINE_POINT}"
+    local current_cmd="${current_word%% *}"
 
-# Show ghost hint after current line
-_ghostsh_show_hint() {
-    local line="$READLINE_LINE"
-    local hint
-    hint="$("$GHOSTSH_BIN" --hint "$line" 2>/dev/null)" || hint=""
-
-    # Save cursor position relative to line end
-    local cols=${#READLINE_LINE}
-    local pos="$READLINE_POINT"
-
-    # Carriage return, reprint prompt+line, then grey hint, then restore cursor
-    # NOTE: This is *approximate*; proper PS1 width handling is what makes ble.sh huge.
-    local esc_reset=$'\e[0m'
-    local esc_grey=$'\e[90m'
-
-    # Repaint line + hint
-    echo -ne "\r"
-    # Let readline redraw the prompt + line
-    # Trick: force a redisplay
-    bind '"\er": redraw-current-line'
-    # Now print hint after line
-    echo -ne "$esc_grey$hint$esc_reset"
-
-    # Move cursor back to original logical position
-    local move_back=$(( cols + ${#hint} - pos ))
-    if (( move_back > 0 )); then
-        printf '\e[%dD' "$move_back"
+    # Only suggest for non-empty, incomplete commands
+    if [[ -z "$current_cmd" || "$current_cmd" =~ [[:space:]] ]]; then
+        return 0
     fi
-}
 
-# Accept the current hint by actually completing READLINE_LINE
-_ghostsh_accept_hint() {
-    local line="$READLINE_LINE"
-    local hint
-    hint="$("$GHOSTSH_BIN" --hint "$line" 2>/dev/null)" || hint=""
-
-    if [[ -n "$hint" ]]; then
-        READLINE_LINE+="$hint"
-        READLINE_POINT=${#READLINE_LINE}
+    local suffix
+    suffix="$(bash_ghost_completion "$current_cmd")"
+    local exit_code=$?
+    
+    if [[ -n "$suffix" ]]; then
+        # Display ghost text (gray color)
+        echo -ne "\033[2;90m$suffix\033[0m"
+        # Move cursor back to original position
+        echo -ne "\033[${#suffix}D"
     fi
+    
+    # Free the allocated memory
+    if [[ -n "$suffix" ]]; then
+        bash_free_string "$suffix"
+    fi
+    
+    return 0
 }
 
-# Hook: after each keypress, update the hint display
-_ghostsh_post_key() {
-    # Just refresh hint
-    _ghostsh_show_hint
-}
-
-# Initialization: bind keys
-ghostsh_ble_init() {
-    # Bind Right Arrow to accept the ghost hint
-    bind -x '"\e[C": _ghostsh_accept_hint'
-
-    # Bind a key to manually refresh the hint (e.g. Ctrl-Space)
-    bind -x '"\C-@": _ghostsh_post_key'
-
-    # OPTIONAL: you *could* remap printable keys to call _ghostsh_post_key
-    # after self-insert, but that’s where it starts to become a mini-ble.sh.
-}
-
-ghostsh_ble_init
-
+# Use PROMPT_COMMAND to trigger the hook before the prompt is redrawn
+PROMPT_COMMAND="_ghost_completion_hook; $PROMPT_COMMAND"
