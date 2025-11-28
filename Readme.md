@@ -2,6 +2,8 @@
 
 A pure Bash implementation of ghost text suggestions (like Fish shell) that shows autocomplete suggestions from your command history as you type.
 
+<img width="407" height="170" alt="image" src="https://github.com/user-attachments/assets/48d529c7-cb2a-44e3-a217-6b559619ce25" />
+
 ## Features
 
 - **Automatic suggestions** - Shows suggestions in gray text as you type
@@ -51,6 +53,7 @@ You can customize these variables at the top of the script:
 - Only supports basic printable characters (letters, numbers, common symbols)
 - Suggestions are based on exact prefix matching
 - May not work with all terminal emulators
+- Leaves chars behind if `Ctrl-c`
 
 ## Troubleshooting
 
