@@ -1,32 +1,48 @@
-enable -f ./target/release/libghostsh.so ghost_mod
+#!/bin/bash
 
-_ghost_completion_hook() {
-    local current_word="${READLINE_LINE:0:READLINE_POINT}"
-    local current_cmd="${current_word%% *}"
+_ghost_bin="./target/release/ghost"
 
-    # Only suggest for non-empty, incomplete commands
-    if [[ -z "$current_cmd" || "$current_cmd" =~ [[:space:]] ]]; then
-        return 0
-    fi
+if [[ ! -x "$_ghost_bin" ]]; then
+    echo "Error: Ghost binary not found at $_ghost_bin" >&2
+    echo "Please build it with: cargo build --release" >&2
+    return 1
+fi
 
-    local suffix
-    suffix="$(bash_ghost_completion "$current_cmd")"
-    local exit_code=$?
-    
-    if [[ -n "$suffix" ]]; then
-        # Display ghost text (gray color)
-        echo -ne "\033[2;90m$suffix\033[0m"
-        # Move cursor back to original position
-        echo -ne "\033[${#suffix}D"
+_ghost_accept() {
+    local output
+    output=$("$_ghost_bin" "accept-ghost" 2>/dev/null)
+    if [[ -n "$output" ]]; then
+        READLINE_LINE="$output"
+        READLINE_POINT=${#READLINE_LINE}
     fi
-    
-    # Free the allocated memory
-    if [[ -n "$suffix" ]]; then
-        bash_free_string "$suffix"
-    fi
-    
-    return 0
 }
 
-# Use PROMPT_COMMAND to trigger the hook before the prompt is redrawn
-PROMPT_COMMAND="_ghost_completion_hook; $PROMPT_COMMAND"
+_ghost_widget() {
+    local line="$READLINE_LINE"
+    local point="$READLINE_POINT"
+
+    # Save cursor position
+    printf '\e7'
+
+    # Move to beginning and clear to end of screen
+    printf '\r\e[0J'
+
+    # Redraw just the input line with suggestion
+    printf '$ %s' "$line"
+
+    local suggestion
+    suggestion=$("$_ghost_bin" "ghost-widget" 2>&1)
+
+    if [[ -n "$suggestion" ]]; then
+        printf '\x1b[90m%s\x1b[0m' "$suggestion"
+    fi
+
+    # Restore cursor position
+    printf '\e8'
+}
+
+bind -x '"\C-g": _ghost_widget'
+bind -x '"\t": _ghost_accept'
+
+echo "Ghost suggestions enabled!"
+echo "Press Ctrl+G to show suggestions, Tab to accept"
