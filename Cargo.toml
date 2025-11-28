@@ -1,7 +1,0 @@
-[package]
-name = "ghost"
-version = "0.2.0"
-edition = "2021"
-
-[dependencies]
-# nix = { version = "0.27", features = ["term"] }
