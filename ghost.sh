@@ -3,119 +3,70 @@
 _ghost_history_file="$HOME/.bash_history"
 _ghost_max_entries=10000
 _ghost_last_char=""
+_ghost_last_suggestion=""
 
 _ghost_load_history() {
     local count=0
     _ghost_history=()
-    if [[ -f "$_ghost_history_file" ]]; then
-        while IFS= read -r line && (( count < _ghost_max_entries )); do
-            line="${line%%$'\n'*}"
-            if [[ -n "$line" ]]; then
-                _ghost_history["$count"]="$line"
-                ((count++))
-            fi
-        done < <(tac "$_ghost_history_file" 2>/dev/null)
-    fi
+    [[ -f "$_ghost_history_file" ]] || return
+    while IFS= read -r line && (( count < _ghost_max_entries )); do
+        line="${line%%$'\n'*}"
+        [[ -n "$line" ]] && _ghost_history["$count"]="$line" && ((count++))
+    done < <(tac "$_ghost_history_file" 2>/dev/null)
 }
 
 _ghost_find_suggestion() {
-    local prefix="$1"
-    if [[ -z "$prefix" ]]; then
-        return
-    fi
+    [[ -z "$1" ]] && return
     local entry
     for entry in "${_ghost_history[@]}"; do
-        if [[ "$entry" == "$prefix"* && "${#entry}" -gt "${#prefix}" ]]; then
-            printf '%s' "${entry:${#prefix}}"
-            return
-        fi
+        [[ "$entry" == "$1"* && "${#entry}" -gt "${#1}" ]] && printf '%s' "${entry:${#1}}" && return
     done
 }
 
 _ghost_accept() {
-    local line="$READLINE_LINE"
-    local suggestion="$(_ghost_find_suggestion "$line")"
-    if [[ -n "$suggestion" ]]; then
-        READLINE_LINE="${line}${suggestion}"
-        READLINE_POINT="${#READLINE_LINE}"
-    fi
+    local suggestion="$(_ghost_find_suggestion "$READLINE_LINE")"
+    [[ -n "$suggestion" ]] && READLINE_LINE="${READLINE_LINE}${suggestion}" && READLINE_POINT="${#READLINE_LINE}"
+    _ghost_last_suggestion=""
 }
 
 _ghost_widget() {
-    # Insert the character first if we have one
-    if [[ -n "$_ghost_last_char" ]]; then
-        READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${_ghost_last_char}${READLINE_LINE:$READLINE_POINT}"
-        ((READLINE_POINT++))
-        _ghost_last_char=""
+    [[ -n "$_ghost_last_char" ]] && READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${_ghost_last_char}${READLINE_LINE:$READLINE_POINT}" && ((READLINE_POINT++)) && _ghost_last_char=""
+    
+    local suggestion="$(_ghost_find_suggestion "$READLINE_LINE")"
+    
+    # Only redraw if suggestion changed
+    if [[ "$suggestion" != "$_ghost_last_suggestion" ]]; then
+        # Clear old suggestion if it exists
+        [[ -n "$_ghost_last_suggestion" ]] && printf '\e[K'
+        # Show new suggestion
+        [[ -n "$suggestion" ]] && printf '\e[s\e[90m%s\e[0m\e[u' "$suggestion"
+        _ghost_last_suggestion="$suggestion"
     fi
-
-    local line="$READLINE_LINE"
-    local suggestion="$(_ghost_find_suggestion "$line")"
-
-    # Save cursor position
-    printf '\e7'
-    # Move to beginning and clear to end of screen
-    printf '\r\e[0J'
-    # Redraw just the input line with suggestion
-    printf '$ %s' "$line"
-    if [[ -n "$suggestion" ]]; then
-        printf '\e[90m%s\e[0m' "$suggestion"
-    fi
-    # Restore cursor position
-    printf '\e8'
 }
 
-_ghost_handle_backspace() {
-    if (( READLINE_POINT > 0 )); then
-        READLINE_LINE="${READLINE_LINE:0:$((READLINE_POINT-1))}${READLINE_LINE:$READLINE_POINT}"
-        ((READLINE_POINT--))
-    fi
-
-    # Redraw with updated suggestion
-    local line="$READLINE_LINE"
-    local suggestion="$(_ghost_find_suggestion "$line")"
-
-    printf '\e7'
-    printf '\r\e[0J'
-    printf '$ %s' "$line"
-    if [[ -n "$suggestion" ]]; then
-        printf '\e[90m%s\e[0m' "$suggestion"
-    fi
-    printf '\e8'
+_ghost_backspace() {
+    (( READLINE_POINT > 0 )) && READLINE_LINE="${READLINE_LINE:0:$((READLINE_POINT-1))}${READLINE_LINE:$READLINE_POINT}" && ((READLINE_POINT--))
+    
+    local suggestion="$(_ghost_find_suggestion "$READLINE_LINE")"
+    
+    # Clear to end of line and show new suggestion
+    printf '\e[K'
+    [[ -n "$suggestion" ]] && printf '\e[s\e[90m%s\e[0m\e[u' "$suggestion"
+    _ghost_last_suggestion="$suggestion"
 }
 
 _ghost_load_history
 
-# Bind Tab to accept suggestion
-bind -x '"\t": _ghost_accept'
+bind -x '"\e[C": _ghost_accept'
+bind -x '"\C-h": _ghost_backspace'
+bind -x '"\C-?": _ghost_backspace'
 
-# Bind backspace
-bind -x '"\C-h": _ghost_handle_backspace'
-bind -x '"\C-?": _ghost_handle_backspace'
-
-# Bind letters
-for char in {a..z} {A..Z}; do
+for char in {a..z} {A..Z} {0..9}; do
     bind -x "\"$char\": _ghost_last_char='$char' _ghost_widget"
 done
 
-# Bind numbers
-for num in {0..9}; do
-    bind -x "\"$num\": _ghost_last_char='$num' _ghost_widget"
+for char in " " "-" "_" "/" "." "," "@" "=" "+"; do
+    bind -x "\"$char\": _ghost_last_char='$char' _ghost_widget"
 done
 
-# Bind space
-bind -x '" ": _ghost_last_char=" " _ghost_widget'
-
-# Bind common special characters
-bind -x '"-": _ghost_last_char="-" _ghost_widget'
-bind -x '"_": _ghost_last_char="_" _ghost_widget'
-bind -x '"/": _ghost_last_char="/" _ghost_widget'
-bind -x '".": _ghost_last_char="." _ghost_widget'
-bind -x '",": _ghost_last_char="," _ghost_widget'
-bind -x '"@": _ghost_last_char="@" _ghost_widget'
-bind -x '"=": _ghost_last_char="=" _ghost_widget'
-bind -x '"+": _ghost_last_char="+" _ghost_widget'
-
-echo "Ghost suggestions enabled!"
-echo "Suggestions appear automatically as you type"
-echo "Press Tab to accept the suggestion"
+echo "Ghost.sh enabled - Right Arrow accepts suggestions"
