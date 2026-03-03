@@ -1,16 +1,25 @@
 # Bash Ghost Suggestions
+![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)
+![Dependencies](https://img.shields.io/badge/Dependencies-None-brightgreen)
+![Status](https://img.shields.io/badge/Status-Stable-success)
 
-A pure Bash implementation of ghost text suggestions (like Fish shell) that shows autocomplete suggestions from your command history as you type.
+A lightweight, fast, pure Bash ghost text suggestion system.
 
-<img width="407" height="170" alt="image" src="https://github.com/user-attachments/assets/48d529c7-cb2a-44e3-a217-6b559619ce25" />
+Type a command prefix → see inline ghost text → press → (Right Arrow)  to accept.
+
+<p align="center">
+  <img src="assets/demo.gif" width="800" alt="Demo">
+</p>
 
 ## Features
 
-- **Automatic suggestions** - Shows suggestions in gray text as you type
-- **Real-time updates** - Suggestions update instantly with each keystroke
-- **History-based** - Suggests commands from your bash history
-- **Visual feedback** - Gray ghost text that won't interfere with your input
-- **Simple controls** - Just press Tab to accept
+- ⚡ Instant prefix-based suggestions
+- ➡ Accept with **Right Arrow**
+- ⌫ Backspace updates suggestions live
+- ⬆⬇ Native Bash history untouched
+- 🎨 Subtle inline ghost UI
+- 🧠 Deduplicated + indexed history for performance
+- 🔌 No plugins. No external dependencies
 
 ## Installation
 
@@ -27,44 +36,28 @@ A pure Bash implementation of ghost text suggestions (like Fish shell) that show
 ## Usage
 
 - **Type normally** - Ghost suggestions appear automatically in gray
-- **Press Tab** - Accept the current suggestion
+- **Press Right Arrow** - Accept the current suggestion
 - **Press Backspace** - Remove characters and update suggestion
-- **Continue typing** - Ghost text updates to match your input
 
 ## How It Works
 
-The script searches your bash history (from newest to oldest) and shows the first matching command that starts with what you've typed. The matching portion appears in gray text after your cursor.
+- Loads recent entries from your Bash history
+- Deduplicates and indexes them by first character
+- Performs fast prefix matching as you type
+- Renders ghost text inline using ANSI cursor save/restore
+- Never modifies history
+- Never overrides Tab completion
+- Leaves native Bash behavior intact
 
 ## Requirements
 
-- Bash 4.0 or later
-- Terminal with ANSI escape sequence support
-- Readable `~/.bash_history` file
-
-## Configuration
-
-You can customize these variables at the top of the script:
-
-- `_ghost_history_file` - Path to history file (default: `~/.bash_history`)
-- `_ghost_max_entries` - Maximum history entries to search (default: 10000)
+- Bash 4.0+
+- ANSI-compatible terminal
+- Readable `~/.bash_history`
 
 ## Limitations
 
-- Only supports basic printable characters (letters, numbers, common symbols)
-- Suggestions are based on exact prefix matching
-- May not work with all terminal emulators
-- Leaves chars behind if `Ctrl-c`
-
-## Troubleshooting
-
-**No suggestions appearing:**
-- Ensure your bash history file exists and has commands
-- Try typing the beginning of a command you've used before
-
-**Weird characters on screen:**
-- Your terminal may not support ANSI escape sequences
-- Try a different terminal emulator
-
-**Characters not appearing:**
-- Make sure you've sourced the script correctly
-- Restart your shell session
+- Prefix matching only (no fuzzy search)
+- Bash only (not zsh/fish)
+- Suggestions shown at end of line only
+- Designed for interactive shells
