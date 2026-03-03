@@ -3,28 +3,39 @@
 _ghost_history_file="$HOME/.bash_history"
 _ghost_max_entries=10000
 _ghost_last_char=""
+_ghost_cache_line=""
+_ghost_cache_suggestion=""
 
 _ghost_load_history() {
     local count=0
     _ghost_history=()
     [[ -f "$_ghost_history_file" ]] || return
-    while IFS= read -r line && (( count < _ghost_max_entries )); do
-        line="${line%%$'\n'*}"
-        [[ -n "$line" ]] && _ghost_history["$count"]="$line" && ((count++))
-    done < <(tac "$_ghost_history_file" 2>/dev/null)
+    mapfile -t -n "$_ghost_max_entries" _ghost_history < <(tac "$_ghost_history_file" 2>/dev/null | grep -v '^$')
 }
 
 _ghost_find_suggestion() {
-    [[ -z "$1" ]] && return
-    local entry
+    local prefix="$1"
+    [[ -z "$prefix" ]] && return
+    
+    [[ "$prefix" == "$_ghost_cache_line" ]] && printf '%s' "$_ghost_cache_suggestion" && return
+    
+    local entry len_prefix="${#prefix}"
     for entry in "${_ghost_history[@]}"; do
-        [[ "$entry" == "$1"* && "${#entry}" -gt "${#1}" ]] && printf '%s' "${entry:${#1}}" && return
+        if [[ "$entry" == "$prefix"* ]] && (( ${#entry} > len_prefix )); then
+            _ghost_cache_line="$prefix"
+            _ghost_cache_suggestion="${entry:$len_prefix}"
+            printf '%s' "$_ghost_cache_suggestion"
+            return
+        fi
     done
+    
+    _ghost_cache_line="$prefix"
+    _ghost_cache_suggestion=""
 }
 
 _ghost_accept() {
     local suggestion="$(_ghost_find_suggestion "$READLINE_LINE")"
-    [[ -n "$suggestion" ]] && READLINE_LINE="${READLINE_LINE}${suggestion}" && READLINE_POINT="${#READLINE_LINE}"
+    [[ -n "$suggestion" ]] && READLINE_LINE="${READLINE_LINE}${suggestion}" && READLINE_POINT="${#READLINE_LINE}" && _ghost_cache_line="" && printf '\e7\r\e[K$ %s\e[K\e8' "$READLINE_LINE"
 }
 
 _ghost_widget() {
@@ -53,7 +64,7 @@ for char in {a..z} {A..Z} {0..9}; do
     bind -x "\"$char\": _ghost_last_char='$char' _ghost_widget"
 done
 
-for char in " " "-" "_" "/" "." "," "@" "=" "+"; do
+for char in "-" "_" "/" "." "," "@" "=" "+"; do
     bind -x "\"$char\": _ghost_last_char='$char' _ghost_widget"
 done
 
