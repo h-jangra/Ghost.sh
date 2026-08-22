@@ -22,17 +22,25 @@ git clone https://github.com/h-jangra/Ghost.sh.git
 cd Ghost.sh
 ```
 
-Add to `~/.bashrc`:
+### Add to `~/.bashrc`:
 
 ```bash
 source /path/to/Ghost.sh/ghost.sh
 source /path/to/Ghost.sh/navigation.sh
 ```
 
-Reload:
+### Reload:
 
 ```bash
 source ~/.bashrc
+```
+
+### Clear Suggestions:
+Ghost suggestions are based on Bash history. To reset them:
+```bash
+history -c
+history -w
+> ~/.bash_history
 ```
 
 ## Keybindings
