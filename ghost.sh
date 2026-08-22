@@ -5,6 +5,7 @@ GHOST_COLOR="${GHOST_COLOR:-38;5;244}"
 _ghost_history=()
 _ghost_suggestion=""
 _ghost_last_len=0
+_ghost_gen=0
 _NAV_MENU_ACTIVE="${_NAV_MENU_ACTIVE:-0}"
 
 _ghost_init() {
@@ -47,12 +48,19 @@ _ghost_show() {
     local text="$1"
     if (( ${_NAV_MENU_ACTIVE:-0} )) || [[ -z "$text" ]]; then
         _ghost_clear
+        printf '\e[?2026l' >&2
         return
     fi
     _ghost_last_len=${#text}
+    (( _ghost_gen++ ))
+    local cur_gen=$_ghost_gen
     ( (
-        sleep 0.005
-        printf '\e[%sm%s\e[0m\e[%dD' "$GHOST_COLOR" "$text" "${#text}" >&2
+        sleep 0.002 2>/dev/null || sleep 0 2>/dev/null || true
+        if (( cur_gen == _ghost_gen )); then
+            printf '\e[%sm%s\e[0m\e[%dD\e[?2026l' "$GHOST_COLOR" "$text" "${#text}" >&2
+        else
+            printf '\e[?2026l' >&2
+        fi
     ) & )
 }
 
@@ -71,6 +79,7 @@ _ghost_get_suggestion() {
 _ghost_render() {
     if (( ${_NAV_MENU_ACTIVE:-0} )); then
         _ghost_clear
+        printf '\e[?2026l' >&2
         return
     fi
 
@@ -84,7 +93,7 @@ _ghost_render() {
 }
 
 _ghost_insert_char() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     local char
     printf -v char '%b' "$(printf '\\%03o' "$1")"
     READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$char${READLINE_LINE:$READLINE_POINT}"
@@ -93,7 +102,7 @@ _ghost_insert_char() {
 }
 
 _ghost_accept() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         (( READLINE_POINT++ ))
         _ghost_render
@@ -102,11 +111,13 @@ _ghost_accept() {
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion=""
         _ghost_show ""
+    else
+        printf '\e[?2026l' >&2
     fi
 }
 
 _ghost_accept_word() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         local rest="${READLINE_LINE:$READLINE_POINT}"
         [[ "$rest" =~ ^([[:alnum:]_]+|[^[:alnum:]_[:space:]]+|[[:space:]]+) ]] && (( READLINE_POINT += ${#BASH_REMATCH[0]} ))
@@ -118,11 +129,13 @@ _ghost_accept_word() {
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion="${_ghost_suggestion#"$word"}"
         _ghost_show "$_ghost_suggestion"
+    else
+        printf '\e[?2026l' >&2
     fi
 }
 
 _ghost_backspace() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT > 0 )); then
         READLINE_LINE="${READLINE_LINE:0:$((READLINE_POINT - 1))}${READLINE_LINE:$READLINE_POINT}"
         (( READLINE_POINT-- ))
@@ -131,7 +144,7 @@ _ghost_backspace() {
 }
 
 _ghost_delete() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${READLINE_LINE:$((READLINE_POINT + 1))}"
     fi
@@ -139,7 +152,7 @@ _ghost_delete() {
 }
 
 _ghost_backward_kill_word() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT > 0 )); then
         local pre="${READLINE_LINE:0:$READLINE_POINT}"
         local post="${READLINE_LINE:$READLINE_POINT}"
@@ -153,32 +166,32 @@ _ghost_backward_kill_word() {
 }
 
 _ghost_kill_line() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}"
     _ghost_render
 }
 
 _ghost_clear_line() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     READLINE_LINE=""
     READLINE_POINT=0
     _ghost_render
 }
 
 _ghost_cursor_left() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     (( READLINE_POINT > 0 )) && (( READLINE_POINT-- ))
     _ghost_render
 }
 
 _ghost_cursor_home() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     READLINE_POINT=0
     _ghost_render
 }
 
 _ghost_cursor_end() {
-    _ghost_clear
+    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         READLINE_POINT=${#READLINE_LINE}
         _ghost_render
@@ -187,12 +200,15 @@ _ghost_cursor_end() {
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion=""
         _ghost_show ""
+    else
+        printf '\e[?2026l' >&2
     fi
 }
 
 _ghost_enter_clear() {
     _ghost_clear
     _ghost_suggestion=""
+    printf '\e[?2026l' >&2
 }
 
 _ghost_init
