@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Ghost completions — dynamic suggestions as you type
 
+set +m 2>/dev/null || true
+bind 'set bind-tty-special-chars off' 2>/dev/null || true
+
 GHOST_COLOR="${GHOST_COLOR:-38;5;244}"
 _ghost_history=()
 _ghost_suggestion=""
+_ghost_matched_cmd=""
+_ghost_last_rendered=""
 _ghost_last_len=0
-_ghost_gen=0
 _NAV_MENU_ACTIVE="${_NAV_MENU_ACTIVE:-0}"
 
 _ghost_init() {
@@ -30,70 +34,88 @@ _ghost_init() {
     _ghost_history=("${raw[@]}")
 }
 
-_ghost_refresh() {
-    history -a 2>/dev/null
-    _ghost_init
+_ghost_erase() {
+    if [[ -n "$_ghost_last_rendered" ]]; then
+        local p="${PS1@P}"
+        p="${p##*$'\n'}"
+        p="${p//$'\001'/}"
+        p="${p//$'\002'/}"
+        printf '%s%s\e[K\r' "$p" "$READLINE_LINE" >&2
+        _ghost_last_rendered=""
+    fi
+}
+
+_ghost_hide() {
+    _ghost_erase
     _ghost_suggestion=""
+    _ghost_matched_cmd=""
+    _ghost_last_rendered=""
     _ghost_last_len=0
 }
 
 _ghost_clear() {
-    if (( _ghost_last_len > 0 )); then
-        printf '\e[K' >&2
-        _ghost_last_len=0
-    fi
-}
-
-_ghost_show() {
-    local text="$1"
-    if (( ${_NAV_MENU_ACTIVE:-0} )) || [[ -z "$text" ]]; then
-        _ghost_clear
-        printf '\e[?2026l' >&2
-        return
-    fi
-    _ghost_last_len=${#text}
-    (( _ghost_gen++ ))
-    local cur_gen=$_ghost_gen
-    ( (
-        sleep 0.002 2>/dev/null || sleep 0 2>/dev/null || true
-        if (( cur_gen == _ghost_gen )); then
-            printf '\e[%sm%s\e[0m\e[%dD\e[?2026l' "$GHOST_COLOR" "$text" "${#text}" >&2
-        else
-            printf '\e[?2026l' >&2
-        fi
-    ) & )
+    _ghost_hide
 }
 
 _ghost_get_suggestion() {
+    local input="$1"
     _ghost_suggestion=""
-    [[ -z "$1" ]] && return
+    [[ -z "$input" ]] && { _ghost_matched_cmd=""; return; }
+
+    # Fast path: check if currently matched command still matches the input prefix
+    if [[ -n "$_ghost_matched_cmd" && "$_ghost_matched_cmd" == "$input"* && "$_ghost_matched_cmd" != "$input" ]]; then
+        _ghost_suggestion="${_ghost_matched_cmd#"$input"}"
+        return
+    fi
+
     local line
     for line in "${_ghost_history[@]}"; do
-        if [[ "$line" == "$1"* && "$line" != "$1" ]]; then
-            _ghost_suggestion="${line#"$1"}"
+        if [[ "$line" == "$input"* && "$line" != "$input" ]]; then
+            _ghost_matched_cmd="$line"
+            _ghost_suggestion="${line#"$input"}"
             return
         fi
     done
+    _ghost_matched_cmd=""
 }
 
 _ghost_render() {
     if (( ${_NAV_MENU_ACTIVE:-0} )); then
-        _ghost_clear
-        printf '\e[?2026l' >&2
+        _ghost_erase
         return
     fi
 
     if (( READLINE_POINT == ${#READLINE_LINE} )) && [[ -n "$READLINE_LINE" ]]; then
         _ghost_get_suggestion "$READLINE_LINE"
-        _ghost_show "$_ghost_suggestion"
     else
         _ghost_suggestion=""
-        _ghost_show ""
+    fi
+
+    if [[ "$_ghost_suggestion" == "$_ghost_last_rendered" ]]; then
+        return
+    fi
+
+    local p="${PS1@P}"
+    p="${p##*$'\n'}"
+    p="${p//$'\001'/}"
+    p="${p//$'\002'/}"
+
+    if [[ -n "$_ghost_suggestion" ]]; then
+        _ghost_last_rendered="$_ghost_suggestion"
+        printf '%s%s\e[%sm%s\e[0m\e[K\r' "$p" "$READLINE_LINE" "$GHOST_COLOR" "$_ghost_suggestion" >&2
+    else
+        _ghost_last_rendered=""
+        printf '%s%s\e[K\r' "$p" "$READLINE_LINE" >&2
     fi
 }
 
+_ghost_refresh() {
+    history -a 2>/dev/null
+    _ghost_init
+    _ghost_hide
+}
+
 _ghost_insert_char() {
-    printf '\e[?2026h' >&2
     local char
     printf -v char '%b' "$(printf '\\%03o' "$1")"
     READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$char${READLINE_LINE:$READLINE_POINT}"
@@ -102,22 +124,21 @@ _ghost_insert_char() {
 }
 
 _ghost_accept() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         (( READLINE_POINT++ ))
         _ghost_render
     elif [[ -n "$_ghost_suggestion" ]]; then
-        READLINE_LINE+="$_ghost_suggestion"
+        local sug="$_ghost_suggestion"
+        _ghost_last_rendered=""
+        READLINE_LINE+="$sug"
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion=""
-        _ghost_show ""
-    else
-        printf '\e[?2026l' >&2
+        _ghost_matched_cmd=""
+        _ghost_render
     fi
 }
 
 _ghost_accept_word() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         local rest="${READLINE_LINE:$READLINE_POINT}"
         [[ "$rest" =~ ^([[:alnum:]_]+|[^[:alnum:]_[:space:]]+|[[:space:]]+) ]] && (( READLINE_POINT += ${#BASH_REMATCH[0]} ))
@@ -125,17 +146,15 @@ _ghost_accept_word() {
     elif [[ -n "$_ghost_suggestion" ]]; then
         local word="${_ghost_suggestion%% *}"
         [[ "$_ghost_suggestion" == *' '* ]] && word+=' '
+        _ghost_last_rendered=""
         READLINE_LINE+="$word"
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion="${_ghost_suggestion#"$word"}"
-        _ghost_show "$_ghost_suggestion"
-    else
-        printf '\e[?2026l' >&2
+        _ghost_render
     fi
 }
 
 _ghost_backspace() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT > 0 )); then
         READLINE_LINE="${READLINE_LINE:0:$((READLINE_POINT - 1))}${READLINE_LINE:$READLINE_POINT}"
         (( READLINE_POINT-- ))
@@ -144,7 +163,6 @@ _ghost_backspace() {
 }
 
 _ghost_delete() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${READLINE_LINE:$((READLINE_POINT + 1))}"
     fi
@@ -152,7 +170,6 @@ _ghost_delete() {
 }
 
 _ghost_backward_kill_word() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT > 0 )); then
         local pre="${READLINE_LINE:0:$READLINE_POINT}"
         local post="${READLINE_LINE:$READLINE_POINT}"
@@ -166,63 +183,56 @@ _ghost_backward_kill_word() {
 }
 
 _ghost_kill_line() {
-    printf '\e[?2026h' >&2
     READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}"
     _ghost_render
 }
 
 _ghost_clear_line() {
-    printf '\e[?2026h' >&2
     READLINE_LINE=""
     READLINE_POINT=0
     _ghost_render
 }
 
 _ghost_cursor_left() {
-    printf '\e[?2026h' >&2
     (( READLINE_POINT > 0 )) && (( READLINE_POINT-- ))
     _ghost_render
 }
 
 _ghost_cursor_home() {
-    printf '\e[?2026h' >&2
     READLINE_POINT=0
     _ghost_render
 }
 
 _ghost_cursor_end() {
-    printf '\e[?2026h' >&2
     if (( READLINE_POINT < ${#READLINE_LINE} )); then
         READLINE_POINT=${#READLINE_LINE}
         _ghost_render
     elif [[ -n "$_ghost_suggestion" ]]; then
-        READLINE_LINE+="$_ghost_suggestion"
+        local sug="$_ghost_suggestion"
+        _ghost_last_rendered=""
+        READLINE_LINE+="$sug"
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion=""
-        _ghost_show ""
-    else
-        printf '\e[?2026l' >&2
+        _ghost_matched_cmd=""
+        _ghost_render
     fi
 }
 
 _ghost_enter_clear() {
-    _ghost_clear
-    _ghost_suggestion=""
-    printf '\e[?2026l' >&2
+    _ghost_hide
 }
 
 _ghost_init
 
 for ((i=32; i<=126; i++)); do
-    printf -v c '%b' "$(printf '\\%03o' "$i")"
-    if [[ "$c" == '"' ]]; then
-        k='\"'
-    elif [[ "$c" == '\' ]]; then
-        k='\\'
-    else
-        k="$c"
-    fi
-    bind -x "\"$k\": _ghost_insert_char $i"
+    case "$i" in
+        34) bind -x '"\"": _ghost_insert_char 34' ;;
+        92) bind -x '"\\": _ghost_insert_char 92' ;;
+        *)
+            printf -v c '%b' "$(printf '\\%03o' "$i")"
+            bind -x "\"$c\": _ghost_insert_char $i"
+            ;;
+    esac
 done
 
 bind -x '"\e[C":    _ghost_accept'
@@ -253,7 +263,12 @@ bind '"\C-m": "\e_ghost_enter\C-j"'
 bind '"\C-j": accept-line'
 
 if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" =~ "declare -a" ]]; then
-    PROMPT_COMMAND+=(_ghost_refresh)
+    _ghost_found=0
+    for _ghost_cmd in "${PROMPT_COMMAND[@]}"; do
+        [[ "$_ghost_cmd" == "_ghost_refresh" ]] && { _ghost_found=1; break; }
+    done
+    (( !_ghost_found )) && PROMPT_COMMAND+=(_ghost_refresh)
+    unset _ghost_found _ghost_cmd
 else
-    PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_ghost_refresh"
+    [[ "${PROMPT_COMMAND:-}" != *"_ghost_refresh"* ]] && PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_ghost_refresh"
 fi

@@ -107,9 +107,9 @@ _nav_cleanup() {
     if (( _nav_rendered_rows > 0 )); then
         local i clr=""
         for ((i=1; i<=_nav_rendered_rows; i++)); do clr+=$'\n\r\e[K'; done
-        printf '\e[?2026h\e7%b\e8\e[?25h\e[?2026l' "$clr" >&2
+        printf '\e7%b\e8\e[?25h' "$clr" > /dev/tty 2>/dev/null || printf '\e7%b\e8\e[?25h' "$clr" >&2
     else
-        printf '\e[?25h' >&2
+        printf '\e[?25h' > /dev/tty 2>/dev/null || printf '\e[?25h' >&2
     fi
     _nav_rendered_rows=0
     _NAV_MENU_ACTIVE=0
@@ -117,7 +117,11 @@ _nav_cleanup() {
 
 _nav_complete() {
     _NAV_MENU_ACTIVE=1
-    (( _ghost_last_len > 0 )) && { printf '\e[K' >&2; _ghost_last_len=0; }
+    if declare -F _ghost_hide >/dev/null; then
+        _ghost_hide
+    elif declare -F _ghost_clear >/dev/null; then
+        _ghost_clear
+    fi
 
     local orig_line="$READLINE_LINE" orig_point=$READLINE_POINT
     _nav_collect "$orig_line" "$orig_point"
@@ -125,7 +129,7 @@ _nav_complete() {
     if (( total == 0 )); then
         _NAV_MENU_ACTIVE=0
         if declare -F _ghost_render >/dev/null; then
-            _ghost_render
+            _ghost_render ""
         fi
         return 0
     fi
@@ -137,7 +141,7 @@ _nav_complete() {
         READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
         _NAV_MENU_ACTIVE=0
         if declare -F _ghost_render >/dev/null; then
-            _ghost_render
+            _ghost_render ""
         fi
         return 0
     fi
@@ -159,7 +163,7 @@ _nav_complete() {
 
     local nl="" i
     for ((i=0; i<vis_rows; i++)); do nl+=$'\n'; done
-    printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" >&2
+    printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" > /dev/tty 2>/dev/null || printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" >&2
     _nav_rendered_rows=$vis_rows
 
     local selected=0 start_row=0
@@ -194,7 +198,7 @@ _nav_complete() {
         done
         for (( ; line_idx <= vis_rows; line_idx++ )); do frame+=$'\n\r\e[K'; done
 
-        printf '\e[?2026h\e7%b\e8\e[?2026l' "$frame" >&2
+        printf '\e7%b\e8' "$frame" > /dev/tty 2>/dev/null || printf '\e7%b\e8' "$frame" >&2
         _nav_read_key || break
 
         case "$_NAV_KEY" in
@@ -231,31 +235,19 @@ _nav_complete() {
                 [[ "$match" != */ && "$match" != *' ' ]] && suffix=" "
                 READLINE_LINE="${_nav_prefix}${match}${suffix}${_nav_suffix}"
                 READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
-                _nav_cleanup
-                if declare -F _ghost_render >/dev/null; then
-                    _ghost_render
-                fi
-                return 0
+                break
                 ;;
             SPACE)
                 local match="${_nav_candidates[$selected]}" suffix=" "
                 [[ "$match" == *' ' ]] && suffix=""
                 READLINE_LINE="${_nav_prefix}${match}${suffix}${_nav_suffix}"
                 READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
-                _nav_cleanup
-                if declare -F _ghost_render >/dev/null; then
-                    _ghost_render
-                fi
-                return 0
+                break
                 ;;
             ESC)
                 READLINE_LINE="$orig_line"
                 READLINE_POINT=$orig_point
-                _nav_cleanup
-                if declare -F _ghost_render >/dev/null; then
-                    _ghost_render
-                fi
-                return 0
+                break
                 ;;
             BACKSPACE)
                 if (( orig_point > 0 )); then
@@ -265,29 +257,21 @@ _nav_complete() {
                     READLINE_LINE="$orig_line"
                     READLINE_POINT=$orig_point
                 fi
-                _nav_cleanup
-                if declare -F _ghost_render >/dev/null; then
-                    _ghost_render
-                fi
-                return 0
+                break
                 ;;
             CHAR:*)
                 local ch="${_NAV_KEY#CHAR:}"
                 local match="${_nav_candidates[$selected]}"
                 READLINE_LINE="${_nav_prefix}${match}${ch}${_nav_suffix}"
                 READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#ch} ))
-                _nav_cleanup
-                if declare -F _ghost_render >/dev/null; then
-                    _ghost_render
-                fi
-                return 0
+                break
                 ;;
         esac
     done
 
     _nav_cleanup
     if declare -F _ghost_render >/dev/null; then
-        _ghost_render
+        _ghost_render ""
     fi
 }
 
