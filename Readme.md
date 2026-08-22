@@ -1,63 +1,53 @@
-# Bash Ghost Suggestions
-![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)
+# Ghost
+
+Lightweight Bash enhancements for inline suggestions and interactive completion.
+
+![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash\&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/Dependencies-None-brightgreen)
-![Status](https://img.shields.io/badge/Status-Stable-success)
 
-A lightweight, fast, pure Bash ghost text suggestion system.
+## Features
 
-Type a command prefix → see inline ghost text → press → (Right Arrow)  to accept.
+* **Ghost suggestions** — Fish/Zsh-style inline history suggestions.
+* **Interactive completion** — Navigate Tab completions with arrows, Tab, or Shift-Tab.
+* **Pure Bash** — No plugins or external dependencies.
 
 <p align="center">
   <img src="assets/demo.gif" width="800" alt="Demo">
 </p>
 
-## Features
+## Install
 
-- ⚡ Instant prefix-based suggestions
-- ➡ Accept with **Right Arrow**
-- ⌫ Backspace updates suggestions live
-- ⬆⬇ Native Bash history untouched
-- 🎨 Subtle inline ghost UI
-- 🧠 Deduplicated + indexed history for performance
-- 🔌 No plugins. No external dependencies
+```bash
+git clone https://github.com/h-jangra/Ghost.sh.git
+cd Ghost.sh
+```
 
-## Installation
+Add to `~/.bashrc`:
 
-1. Save the script as `ghost.sh`
-2. Add to your `~/.bashrc`:
-   ```bash
-   source /path/to/ghost.sh
-   ```
-3. Reload your shell:
-   ```bash
-   source ~/.bashrc
-   ```
+```bash
+source /path/to/Ghost.sh/ghost.sh
+source /path/to/Ghost.sh/navigation.sh
+```
 
-## Usage
+Reload:
 
-- **Type normally** - Ghost suggestions appear automatically in gray
-- **Press Right Arrow** - Accept the current suggestion
-- **Press Backspace** - Remove characters and update suggestion
+```bash
+source ~/.bashrc
+```
 
-## How It Works
+## Keybindings
 
-- Loads recent entries from your Bash history
-- Deduplicates and indexes them by first character
-- Performs fast prefix matching as you type
-- Renders ghost text inline using ANSI cursor save/restore
-- Never modifies history
-- Never overrides Tab completion
-- Leaves native Bash behavior intact
+| Key               | Action                  |
+| ----------------- | ----------------------- |
+| `Tab` / `→`       | Next completion         |
+| `Shift-Tab` / `←` | Previous completion     |
+| `↑` / `↓`         | Navigate grid           |
+| `Enter`           | Accept                  |
+| `Esc` / `Ctrl-C`  | Cancel                  |
+| `Right Arrow`     | Accept ghost suggestion |
 
 ## Requirements
 
-- Bash 4.0+
-- ANSI-compatible terminal
-- Readable `~/.bash_history`
+* Bash 4+
+* ANSI-compatible terminal
 
-## Limitations
-
-- Prefix matching only (no fuzzy search)
-- Bash only (not zsh/fish)
-- Suggestions shown at end of line only
-- Designed for interactive shells

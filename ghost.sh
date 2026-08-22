@@ -1,120 +1,243 @@
 #!/usr/bin/env bash
 # Ghost completions — dynamic suggestions as you type
 
-_ghost_history_data=""
+GHOST_COLOR="${GHOST_COLOR:-38;5;244}"
+_ghost_history=()
 _ghost_suggestion=""
-_ghost_prompt_len=0
+_ghost_last_len=0
+_NAV_MENU_ACTIVE="${_NAV_MENU_ACTIVE:-0}"
 
-_ghost_init_history() {
-    _ghost_history_data=$(
-        fc -ln -2000 2>/dev/null | sed 's/^[[:space:]]*//' | tac | awk '!seen[$0]++'
+_ghost_init() {
+    _ghost_history=()
+    local -a raw=()
+    # Read history with empty HISTTIMEFORMAT to prevent timestamp mangling
+    mapfile -t raw < <(
+        HISTTIMEFORMAT= history 2>/dev/null | sed 's/^[[:space:]]*[0-9]*[[:space:]]*//' | \
+        awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) if(!seen[a[i]]++ && a[i]!="") print a[i]}'
     )
-}
-
-_ghost_update_prompt_len() {
-    local plain
-    # Expand PS1 and strip ANSI escapes and Readline non-printing markers
-    plain=$(printf '%s' "${PS1@P}" \
-        | sed -E $'s/\x1b\\[[0-9;?]*[a-zA-Z]//g; s/\x01|\x02//g')
-    local last="${plain##*$'\n'}"
-    _ghost_prompt_len=${#last}
+    if (( ${#raw[@]} == 0 )); then
+        if [[ -n "${HISTFILE:-}" && -f "$HISTFILE" ]]; then
+            mapfile -t raw < <(
+                awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) if(!seen[a[i]]++ && a[i]!="" && a[i]!~/^#/) print a[i]}' "$HISTFILE" 2>/dev/null
+            )
+        elif [[ -f "$HOME/.bash_history" ]]; then
+            mapfile -t raw < <(
+                awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) if(!seen[a[i]]++ && a[i]!="" && a[i]!~/^#/) print a[i]}' "$HOME/.bash_history" 2>/dev/null
+            )
+        fi
+    fi
+    _ghost_history=("${raw[@]}")
 }
 
 _ghost_refresh() {
-    history -a
-    _ghost_init_history
-    _ghost_update_prompt_len
+    history -a 2>/dev/null
+    _ghost_init
+    _ghost_suggestion=""
+    _ghost_last_len=0
+}
+
+_ghost_clear() {
+    if (( _ghost_last_len > 0 )); then
+        printf '\e[K' >&2
+        _ghost_last_len=0
+    fi
+}
+
+_ghost_show() {
+    local text="$1"
+    if (( ${_NAV_MENU_ACTIVE:-0} )) || [[ -z "$text" ]]; then
+        _ghost_clear
+        return
+    fi
+    _ghost_last_len=${#text}
+    ( (
+        sleep 0.005
+        printf '\e[%sm%s\e[0m\e[%dD' "$GHOST_COLOR" "$text" "${#text}" >&2
+    ) & )
 }
 
 _ghost_get_suggestion() {
     _ghost_suggestion=""
     [[ -z "$1" ]] && return
-    while IFS= read -r line; do
+    local line
+    for line in "${_ghost_history[@]}"; do
         if [[ "$line" == "$1"* && "$line" != "$1" ]]; then
             _ghost_suggestion="${line#"$1"}"
             return
         fi
-    done <<< "$_ghost_history_data"
+    done
 }
 
-# Accept full suggestion; otherwise normal cursor-right
+_ghost_render() {
+    if (( ${_NAV_MENU_ACTIVE:-0} )); then
+        _ghost_clear
+        return
+    fi
+
+    if (( READLINE_POINT == ${#READLINE_LINE} )) && [[ -n "$READLINE_LINE" ]]; then
+        _ghost_get_suggestion "$READLINE_LINE"
+        _ghost_show "$_ghost_suggestion"
+    else
+        _ghost_suggestion=""
+        _ghost_show ""
+    fi
+}
+
+_ghost_insert_char() {
+    _ghost_clear
+    local char
+    printf -v char '%b' "$(printf '\\%03o' "$1")"
+    READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$char${READLINE_LINE:$READLINE_POINT}"
+    READLINE_POINT=$(( READLINE_POINT + ${#char} ))
+    _ghost_render
+}
+
 _ghost_accept() {
-    if [[ $READLINE_POINT -lt ${#READLINE_LINE} ]]; then
-        READLINE_POINT=$(( READLINE_POINT + 1 ))
+    _ghost_clear
+    if (( READLINE_POINT < ${#READLINE_LINE} )); then
+        (( READLINE_POINT++ ))
+        _ghost_render
     elif [[ -n "$_ghost_suggestion" ]]; then
         READLINE_LINE+="$_ghost_suggestion"
         READLINE_POINT=${#READLINE_LINE}
         _ghost_suggestion=""
+        _ghost_show ""
     fi
-    _ghost_render
 }
 
-# Accept next word of suggestion only
 _ghost_accept_word() {
-    [[ -z "$_ghost_suggestion" ]] && return
-    local word="${_ghost_suggestion%% *}"
-    [[ "$_ghost_suggestion" == *' '* ]] && word+=' '
-    READLINE_LINE+="$word"
-    READLINE_POINT=${#READLINE_LINE}
-    _ghost_suggestion="${_ghost_suggestion#"$word"}"
-    _ghost_render
-}
-
-_ghost_render() {
-    [[ $READLINE_POINT -eq ${#READLINE_LINE} ]] \
-        && _ghost_get_suggestion "$READLINE_LINE" \
-        || _ghost_suggestion=""
-
-    local col=$(( _ghost_prompt_len + ${#READLINE_LINE} + 1 ))
-    if [[ -n "$_ghost_suggestion" ]]; then
-        printf '\e[s\e[%dG\e[38;5;244m%s\e[0m\e[u' "$col" "$_ghost_suggestion" >&2
-    else
-        printf '\e[s\e[%dG\e[K\e[u' "$col" >&2
+    _ghost_clear
+    if (( READLINE_POINT < ${#READLINE_LINE} )); then
+        local rest="${READLINE_LINE:$READLINE_POINT}"
+        [[ "$rest" =~ ^([[:alnum:]_]+|[^[:alnum:]_[:space:]]+|[[:space:]]+) ]] && (( READLINE_POINT += ${#BASH_REMATCH[0]} ))
+        _ghost_render
+    elif [[ -n "$_ghost_suggestion" ]]; then
+        local word="${_ghost_suggestion%% *}"
+        [[ "$_ghost_suggestion" == *' '* ]] && word+=' '
+        READLINE_LINE+="$word"
+        READLINE_POINT=${#READLINE_LINE}
+        _ghost_suggestion="${_ghost_suggestion#"$word"}"
+        _ghost_show "$_ghost_suggestion"
     fi
-}
-
-_ghost_insert() {
-    READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$1${READLINE_LINE:$READLINE_POINT}"
-    READLINE_POINT=$((READLINE_POINT + ${#1}))
-    _ghost_render
 }
 
 _ghost_backspace() {
-    if [[ $READLINE_POINT -gt 0 ]]; then
+    _ghost_clear
+    if (( READLINE_POINT > 0 )); then
         READLINE_LINE="${READLINE_LINE:0:$((READLINE_POINT - 1))}${READLINE_LINE:$READLINE_POINT}"
-        READLINE_POINT=$((READLINE_POINT - 1))
+        (( READLINE_POINT-- ))
     fi
     _ghost_render
 }
 
-_ghost_init_history
-_ghost_update_prompt_len
+_ghost_delete() {
+    _ghost_clear
+    if (( READLINE_POINT < ${#READLINE_LINE} )); then
+        READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${READLINE_LINE:$((READLINE_POINT + 1))}"
+    fi
+    _ghost_render
+}
 
-# Character loop for all printable ASCII
-for i in {32..126}; do
-    char=$(printf "\\$(printf '%03o' "$i")")
-    case "$char" in
-        '"') qchar='\"' ;;
-        '\') qchar='\\' ;;
-        *)   qchar="$char" ;;
-    esac
-    bind -x "\"$qchar\": _ghost_insert \"$qchar\""
+_ghost_backward_kill_word() {
+    _ghost_clear
+    if (( READLINE_POINT > 0 )); then
+        local pre="${READLINE_LINE:0:$READLINE_POINT}"
+        local post="${READLINE_LINE:$READLINE_POINT}"
+        local stripped="${pre%"${pre##*[![:space:]]}"}"
+        stripped="${stripped%"${stripped##*[^[:alnum:]_]}"}"
+        [[ "$stripped" == "$pre" ]] && stripped="${pre%[[:space:]]*}"
+        READLINE_LINE="${stripped}${post}"
+        READLINE_POINT=${#stripped}
+    fi
+    _ghost_render
+}
+
+_ghost_kill_line() {
+    _ghost_clear
+    READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}"
+    _ghost_render
+}
+
+_ghost_clear_line() {
+    _ghost_clear
+    READLINE_LINE=""
+    READLINE_POINT=0
+    _ghost_render
+}
+
+_ghost_cursor_left() {
+    _ghost_clear
+    (( READLINE_POINT > 0 )) && (( READLINE_POINT-- ))
+    _ghost_render
+}
+
+_ghost_cursor_home() {
+    _ghost_clear
+    READLINE_POINT=0
+    _ghost_render
+}
+
+_ghost_cursor_end() {
+    _ghost_clear
+    if (( READLINE_POINT < ${#READLINE_LINE} )); then
+        READLINE_POINT=${#READLINE_LINE}
+        _ghost_render
+    elif [[ -n "$_ghost_suggestion" ]]; then
+        READLINE_LINE+="$_ghost_suggestion"
+        READLINE_POINT=${#READLINE_LINE}
+        _ghost_suggestion=""
+        _ghost_show ""
+    fi
+}
+
+_ghost_enter_clear() {
+    _ghost_clear
+    _ghost_suggestion=""
+}
+
+_ghost_init
+
+for ((i=32; i<=126; i++)); do
+    printf -v c '%b' "$(printf '\\%03o' "$i")"
+    if [[ "$c" == '"' ]]; then
+        k='\"'
+    elif [[ "$c" == '\' ]]; then
+        k='\\'
+    else
+        k="$c"
+    fi
+    bind -x "\"$k\": _ghost_insert_char $i"
 done
 
-bind -x '"\e[C":  _ghost_accept'           # right arrow
-bind -x '"\e[D":  READLINE_POINT=$(( READLINE_POINT > 0 ? READLINE_POINT-1 : 0 )); _ghost_render' # left arrow
-bind -x '"\ef":   _ghost_accept_word'      # Alt-f
-bind -x '"\C-f":  _ghost_accept_word'      # Ctrl-f
+bind -x '"\e[C":    _ghost_accept'
+bind -x '"\eOC":    _ghost_accept'
+bind -x '"\e[D":    _ghost_cursor_left'
+bind -x '"\eOD":    _ghost_cursor_left'
+bind -x '"\ef":     _ghost_accept_word'
+bind -x '"\C-f":    _ghost_accept_word'
+bind -x '"\e[1;3C": _ghost_accept_word'
+bind -x '"\e\e[C":  _ghost_accept_word'
+bind -x '"\C-?":    _ghost_backspace'
+bind -x '"\C-h":    _ghost_backspace'
+bind -x '"\e[3~":   _ghost_delete'
+bind -x '"\C-w":    _ghost_backward_kill_word'
+bind -x '"\C-u":    _ghost_clear_line'
+bind -x '"\C-k":    _ghost_kill_line'
+bind -x '"\C-a":    _ghost_cursor_home'
+bind -x '"\e[H":    _ghost_cursor_home'
+bind -x '"\eOH":    _ghost_cursor_home'
+bind -x '"\e[1~":   _ghost_cursor_home'
+bind -x '"\C-e":    _ghost_cursor_end'
+bind -x '"\e[F":    _ghost_cursor_end'
+bind -x '"\eOF":    _ghost_cursor_end'
+bind -x '"\e[4~":   _ghost_cursor_end'
 
-bind -x '"\C-?":  _ghost_backspace'        # Backspace
-bind -x '"\C-h":  _ghost_backspace'        # Ctrl-h (Backspace)
-bind -x '"\C-u":  READLINE_LINE=""; READLINE_POINT=0; _ghost_render'
-bind -x '"\C-l":  clear; _ghost_render'
-bind -x '"\C-a":  READLINE_POINT=0; _ghost_render'
-bind -x '"\C-e":  READLINE_POINT=${#READLINE_LINE}; _ghost_render'
+bind -x '"\e_ghost_enter": _ghost_enter_clear'
+bind '"\C-m": "\e_ghost_enter\C-j"'
+bind '"\C-j": accept-line'
 
-# Clear ghost text on history browse
-bind '"\e[A": "\e[s\e[1000G\e[K\e[u\e[A"'
-bind '"\e[B": "\e[s\e[1000G\e[K\e[u\e[B"'
-
-PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_ghost_refresh"
+if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" =~ "declare -a" ]]; then
+    PROMPT_COMMAND+=(_ghost_refresh)
+else
+    PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_ghost_refresh"
+fi
