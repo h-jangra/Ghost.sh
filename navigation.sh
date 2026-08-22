@@ -8,6 +8,7 @@ _nav_rendered_rows=0
 _nav_prefix=""
 _nav_cur=""
 _nav_suffix=""
+_NAV_KEY=""
 
 _nav_collect() {
     local line="$1" point="$2"
@@ -28,12 +29,14 @@ _nav_collect() {
     read -ra words <<< "$pre"
     [[ "$pre" =~ [[:space:]]$ ]] && words+=("")
     local cword=$(( ${#words[@]} - 1 ))
-    local cmd="${words[0]}"
+    local cmd="${words[0]:-}"
     local prev=""
     (( cword > 0 )) && prev="${words[cword-1]}"
 
-    local comp_spec
-    comp_spec=$(complete -p "$cmd" 2>/dev/null || complete -p "${cmd##*/}" 2>/dev/null)
+    local comp_spec=""
+    if [[ -n "$cmd" ]]; then
+        comp_spec=$(complete -p "$cmd" 2>/dev/null || complete -p "${cmd##*/}" 2>/dev/null)
+    fi
 
     local -a raw=()
     if [[ "$comp_spec" =~ -F[[:space:]]+([^[:space:]]+) ]]; then
@@ -53,17 +56,23 @@ _nav_collect() {
     if (( ${#raw[@]} == 0 )); then
         local unesc="${_nav_cur//\\/}"
         if (( cword <= 0 )) || [[ -z "$cmd" ]]; then
-            mapfile -t raw < <(compgen -c -a -b -k -- "$_nav_cur" | sort -u)
+            mapfile -t raw < <(compgen -c -a -b -k -- "$_nav_cur")
         elif [[ "$_nav_cur" == \$* ]]; then
-            mapfile -t raw < <(compgen -v -- "${_nav_cur#\$}" | sed 's/^/\$/' | sort -u)
+            local -a vraw=()
+            mapfile -t vraw < <(compgen -v -- "${_nav_cur#\$}")
+            local v
+            for v in "${vraw[@]}"; do
+                raw+=("\$$v")
+            done
         elif [[ "$cmd" =~ ^(cd|pushd|rmdir)$ ]]; then
-            mapfile -t raw < <(compgen -d -S / -- "$unesc" | sort -u)
+            mapfile -t raw < <(compgen -d -S / -- "$unesc")
         else
-            mapfile -t raw < <(compgen -f -- "$unesc" | sort -u)
+            mapfile -t raw < <(compgen -f -- "$unesc")
         fi
     fi
 
     local -A seen=()
+    local m
     for m in "${raw[@]}"; do
         [[ -z "$m" ]] && continue
         [[ -d "$m" && "$m" != */ ]] && m+="/"
@@ -119,8 +128,6 @@ _nav_complete() {
     _NAV_MENU_ACTIVE=1
     if declare -F _ghost_hide >/dev/null; then
         _ghost_hide
-    elif declare -F _ghost_clear >/dev/null; then
-        _ghost_clear
     fi
 
     local orig_line="$READLINE_LINE" orig_point=$READLINE_POINT
@@ -129,7 +136,7 @@ _nav_complete() {
     if (( total == 0 )); then
         _NAV_MENU_ACTIVE=0
         if declare -F _ghost_render >/dev/null; then
-            _ghost_render ""
+            _ghost_render
         fi
         return 0
     fi
@@ -141,12 +148,13 @@ _nav_complete() {
         READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
         _NAV_MENU_ACTIVE=0
         if declare -F _ghost_render >/dev/null; then
-            _ghost_render ""
+            _ghost_render
         fi
         return 0
     fi
 
     local term_cols="${COLUMNS:-80}"
+    (( term_cols < 20 )) && term_cols=80
     local max_len=0 item
     for item in "${_nav_candidates[@]}"; do
         (( ${#item} > max_len )) && max_len=${#item}
@@ -167,6 +175,8 @@ _nav_complete() {
     _nav_rendered_rows=$vis_rows
 
     local selected=0 start_row=0
+    local field_w=$(( col_w - 1 ))
+    local trunc_w=$(( col_w - 2 ))
     while true; do
         local cur_row=$(( selected / cols ))
         if (( cur_row < start_row )); then
@@ -175,7 +185,7 @@ _nav_complete() {
             start_row=$(( cur_row - vis_rows + 1 ))
         fi
 
-        local frame="" line_idx=1 r c idx
+        local frame="" line_idx=1 r c idx cell
         for ((r=start_row; r<start_row+vis_rows && r<total_rows; r++)); do
             local row_str=""
             for ((c=0; c<cols; c++)); do
@@ -183,14 +193,15 @@ _nav_complete() {
                 if (( idx < total )); then
                     local item="${_nav_candidates[$idx]}"
                     local text="$item"
-                    (( ${#text} > col_w - 1 )) && text="${text:0:$((col_w-2))}…"
+                    (( ${#text} > field_w )) && text="${text:0:trunc_w}…"
                     if (( idx == selected )); then
-                        row_str+=$(printf "\e[7m%-*s\e[0m " "$((col_w-1))" "$text")
+                        printf -v cell "\e[7m%-*s\e[0m " "$field_w" "$text"
                     elif [[ "$item" == */ ]]; then
-                        row_str+=$(printf "\e[1;34m%-*s\e[0m " "$((col_w-1))" "$text")
+                        printf -v cell "\e[1;34m%-*s\e[0m " "$field_w" "$text"
                     else
-                        row_str+=$(printf "\e[0m%-*s " "$((col_w-1))" "$text")
+                        printf -v cell "\e[0m%-*s " "$field_w" "$text"
                     fi
+                    row_str+="$cell"
                 fi
             done
             frame+=$'\n\r'"$row_str"$'\e[K'
@@ -224,8 +235,8 @@ _nav_complete() {
                 else
                     selected=$(( selected - cols ))
                     if (( selected < 0 )); then
-                        local c=$(( (selected + cols) % cols ))
-                        selected=$(( (total_rows - 1) * cols + c ))
+                        local col_idx=$(( (selected + cols) % cols ))
+                        selected=$(( (total_rows - 1) * cols + col_idx ))
                         (( selected >= total )) && selected=$(( total - 1 ))
                     fi
                 fi
@@ -271,9 +282,8 @@ _nav_complete() {
 
     _nav_cleanup
     if declare -F _ghost_render >/dev/null; then
-        _ghost_render ""
+        _ghost_render
     fi
 }
 
 bind -x '"\C-i": _nav_complete'
-
