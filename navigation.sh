@@ -25,27 +25,54 @@ _nav_collect() {
     _nav_suffix="${line:point}"
 
     local pre="${line:0:point}"
+    local cmd_pre="$pre"
+    local last_sep=-1
+    for ((i=${#pre}-1; i>=0; i--)); do
+        if [[ "${pre:i:1}" =~ [\|\;\&\(\`] ]]; then
+            last_sep=$i
+            break
+        fi
+    done
+    if (( last_sep >= 0 )); then
+        cmd_pre="${pre:last_sep+1}"
+        cmd_pre="${cmd_pre#"${cmd_pre%%[![:space:]]*}"}"
+    fi
+
     local -a words=()
-    read -ra words <<< "$pre"
-    [[ "$pre" =~ [[:space:]]$ ]] && words+=("")
+    read -ra words <<< "$cmd_pre"
+    [[ "$cmd_pre" =~ [[:space:]]$ ]] && words+=("")
     local cword=$(( ${#words[@]} - 1 ))
     local cmd="${words[0]:-}"
     local prev=""
     (( cword > 0 )) && prev="${words[cword-1]}"
 
     local comp_spec=""
-    if [[ -n "$cmd" ]]; then
+    if (( cword > 0 )) && [[ -n "$cmd" ]]; then
         comp_spec=$(complete -p "$cmd" 2>/dev/null || complete -p "${cmd##*/}" 2>/dev/null)
+        if [[ -z "$comp_spec" ]]; then
+            if [[ "$(complete -p -D 2>/dev/null)" =~ -F[[:space:]]+([^[:space:]]+) ]]; then
+                "${BASH_REMATCH[1]}" "$cmd" 2>/dev/null || "${BASH_REMATCH[1]}" "${cmd##*/}" 2>/dev/null
+            elif declare -F _completion_loader >/dev/null; then
+                _completion_loader "$cmd" 2>/dev/null || _completion_loader "${cmd##*/}" 2>/dev/null
+            elif declare -F _comp_load >/dev/null; then
+                _comp_load "$cmd" 2>/dev/null || _comp_load "${cmd##*/}" 2>/dev/null
+            fi
+            comp_spec=$(complete -p "$cmd" 2>/dev/null || complete -p "${cmd##*/}" 2>/dev/null)
+        fi
     fi
 
     local -a raw=()
     if [[ "$comp_spec" =~ -F[[:space:]]+([^[:space:]]+) ]]; then
         local func="${BASH_REMATCH[1]}"
         if declare -F "$func" >/dev/null; then
-            COMP_LINE="$line" COMP_POINT=$point COMP_WORDS=("${words[@]}") COMP_CWORD=$cword COMP_KEY=9 COMP_TYPE=9 COMPREPLY=()
+            COMP_LINE="$cmd_pre" COMP_POINT=${#cmd_pre} COMP_WORDS=("${words[@]}") COMP_CWORD=$cword COMP_KEY=9 COMP_TYPE=9 COMPREPLY=()
             "$func" "$cmd" "$_nav_cur" "$prev" 2>/dev/null
             raw=("${COMPREPLY[@]}")
         fi
+    elif [[ "$comp_spec" =~ -C[[:space:]]+(\'([^\']*)\'|\"([^\"]*)\"|([^[:space:]]+)) ]]; then
+        local ccmd="${BASH_REMATCH[2]:-${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}}"
+        COMP_LINE="$cmd_pre" COMP_POINT=${#cmd_pre} COMP_WORDS=("${words[@]}") COMP_CWORD=$cword COMP_KEY=9 COMP_TYPE=9
+        mapfile -t raw < <(eval "$ccmd" "\"$cmd\"" "\"$_nav_cur\"" "\"$prev\"" 2>/dev/null)
     elif [[ "$comp_spec" =~ -W[[:space:]]+(\'([^\']*)\'|\"([^\"]*)\"|([^[:space:]]+)) ]]; then
         local wlist="${BASH_REMATCH[2]:-${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}}"
         mapfile -t raw < <(compgen -W "$wlist" -- "$_nav_cur")
@@ -58,7 +85,12 @@ _nav_collect() {
         local unesc="${_nav_cur//\\/}"
         if (( cword <= 0 )) || [[ -z "$cmd" ]]; then
             is_file=0
-            mapfile -t raw < <(compgen -c -a -b -k -- "$_nav_cur")
+            if [[ "$_nav_cur" == ./* || "$_nav_cur" == ../* || "$_nav_cur" == /* || "$_nav_cur" == ~* ]]; then
+                is_file=1
+                mapfile -t raw < <(compgen -f -- "$unesc")
+            else
+                mapfile -t raw < <(compgen -c -a -b -k -- "$_nav_cur")
+            fi
         elif [[ "$_nav_cur" == \$* ]]; then
             is_file=0
             local -a vraw=()
@@ -133,12 +165,15 @@ _nav_complete() {
     _nav_collect "$orig_line" "$orig_point"
     local total=${#_nav_candidates[@]}
     if (( total == 0 )); then
+        if declare -F _ghost_render >/dev/null; then
+            _ghost_render
+        fi
         return 0
     fi
 
     if (( total == 1 )); then
         local match="${_nav_candidates[0]}" suffix=""
-        [[ "$match" != */ && "$match" != *' ' ]] && suffix=" "
+        [[ "$match" != */ && "$match" != *' ' && "$match" != *= ]] && suffix=" "
         READLINE_LINE="${_nav_prefix}${match}${suffix}${_nav_suffix}"
         READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
         if declare -F _ghost_render >/dev/null; then
@@ -242,7 +277,7 @@ _nav_complete() {
                 ;;
             ENTER)
                 local match="${_nav_candidates[$selected]}" suffix=""
-                [[ "$match" != */ && "$match" != *' ' ]] && suffix=" "
+                [[ "$match" != */ && "$match" != *' ' && "$match" != *= ]] && suffix=" "
                 READLINE_LINE="${_nav_prefix}${match}${suffix}${_nav_suffix}"
                 READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
                 break
@@ -286,3 +321,4 @@ _nav_complete() {
 }
 
 bind -x '"\C-i": _nav_complete'
+bind -x '"\t":   _nav_complete'

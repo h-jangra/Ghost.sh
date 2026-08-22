@@ -290,6 +290,8 @@ done
 
 bind -x '"\e[C":    _ghost_accept'
 bind -x '"\eOC":    _ghost_accept'
+bind -x '"\C-i":    _ghost_accept'
+bind -x '"\t":     _ghost_accept'
 bind -x '"\e[D":    _ghost_cursor_left'
 bind -x '"\eOD":    _ghost_cursor_left'
 bind -x '"\ef":     _ghost_accept_word'
