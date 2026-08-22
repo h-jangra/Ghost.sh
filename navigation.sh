@@ -53,11 +53,14 @@ _nav_collect() {
         mapfile -t raw < <(compgen -A "${BASH_REMATCH[1]}" -- "$_nav_cur")
     fi
 
+    local is_file=1
     if (( ${#raw[@]} == 0 )); then
         local unesc="${_nav_cur//\\/}"
         if (( cword <= 0 )) || [[ -z "$cmd" ]]; then
+            is_file=0
             mapfile -t raw < <(compgen -c -a -b -k -- "$_nav_cur")
         elif [[ "$_nav_cur" == \$* ]]; then
+            is_file=0
             local -a vraw=()
             mapfile -t vraw < <(compgen -v -- "${_nav_cur#\$}")
             local v
@@ -65,6 +68,7 @@ _nav_collect() {
                 raw+=("\$$v")
             done
         elif [[ "$cmd" =~ ^(cd|pushd|rmdir)$ ]]; then
+            is_file=0
             mapfile -t raw < <(compgen -d -S / -- "$unesc")
         else
             mapfile -t raw < <(compgen -f -- "$unesc")
@@ -75,7 +79,7 @@ _nav_collect() {
     local m
     for m in "${raw[@]}"; do
         [[ -z "$m" ]] && continue
-        [[ -d "$m" && "$m" != */ ]] && m+="/"
+        (( is_file )) && [[ "$m" != */ && -d "$m" ]] && m+="/"
         if [[ -z "${seen["$m"]:-}" ]]; then
             seen["$m"]=1
             _nav_candidates+=("$m")
@@ -116,28 +120,19 @@ _nav_cleanup() {
     if (( _nav_rendered_rows > 0 )); then
         local i clr=""
         for ((i=1; i<=_nav_rendered_rows; i++)); do clr+=$'\n\r\e[K'; done
-        printf '\e7%b\e8\e[?25h' "$clr" > /dev/tty 2>/dev/null || printf '\e7%b\e8\e[?25h' "$clr" >&2
+        printf '\e7%b\e8\e[?25h' "$clr" >&2
     else
-        printf '\e[?25h' > /dev/tty 2>/dev/null || printf '\e[?25h' >&2
+        printf '\e[?25h' >&2
     fi
     _nav_rendered_rows=0
     _NAV_MENU_ACTIVE=0
 }
 
 _nav_complete() {
-    _NAV_MENU_ACTIVE=1
-    if declare -F _ghost_hide >/dev/null; then
-        _ghost_hide
-    fi
-
     local orig_line="$READLINE_LINE" orig_point=$READLINE_POINT
     _nav_collect "$orig_line" "$orig_point"
     local total=${#_nav_candidates[@]}
     if (( total == 0 )); then
-        _NAV_MENU_ACTIVE=0
-        if declare -F _ghost_render >/dev/null; then
-            _ghost_render
-        fi
         return 0
     fi
 
@@ -146,11 +141,15 @@ _nav_complete() {
         [[ "$match" != */ && "$match" != *' ' ]] && suffix=" "
         READLINE_LINE="${_nav_prefix}${match}${suffix}${_nav_suffix}"
         READLINE_POINT=$(( ${#_nav_prefix} + ${#match} + ${#suffix} ))
-        _NAV_MENU_ACTIVE=0
         if declare -F _ghost_render >/dev/null; then
             _ghost_render
         fi
         return 0
+    fi
+
+    _NAV_MENU_ACTIVE=1
+    if declare -F _ghost_hide >/dev/null; then
+        _ghost_hide
     fi
 
     local term_cols="${COLUMNS:-80}"
@@ -171,7 +170,7 @@ _nav_complete() {
 
     local nl="" i
     for ((i=0; i<vis_rows; i++)); do nl+=$'\n'; done
-    printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" > /dev/tty 2>/dev/null || printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" >&2
+    printf '\e[?25l%s\e[%dA\e7' "$nl" "$vis_rows" >&2
     _nav_rendered_rows=$vis_rows
 
     local selected=0 start_row=0
@@ -209,7 +208,7 @@ _nav_complete() {
         done
         for (( ; line_idx <= vis_rows; line_idx++ )); do frame+=$'\n\r\e[K'; done
 
-        printf '\e7%b\e8' "$frame" > /dev/tty 2>/dev/null || printf '\e7%b\e8' "$frame" >&2
+        printf '\e7%b\e8' "$frame" >&2
         _nav_read_key || break
 
         case "$_NAV_KEY" in
