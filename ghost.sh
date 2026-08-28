@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Ghost + Navigation replacement with compiled Zig binary frontend
+# Ghost shell frontend with compiled Zig binary
 
-_GHOST_BIN="${_GHOST_BIN:-ghost}"
-if ! command -v "$_GHOST_BIN" >/dev/null 2>&1; then
+if [[ -z "${_GHOST_BIN:-}" ]]; then
     if [[ -x "$(dirname "${BASH_SOURCE[0]}")/ghost" ]]; then
         _GHOST_BIN="$(dirname "${BASH_SOURCE[0]}")/ghost"
+    else
+        _GHOST_BIN="ghost"
     fi
 fi
 
@@ -14,34 +15,42 @@ _ghost_readline_hook() {
         return
     fi
 
-    # Flush current session history to disk so Zig can access the latest commands
-    history -a 2>/dev/null
-
-    local prompt_expanded
-    prompt_expanded="${PS1@P}"
-
     local hist_file="${HISTFILE:-$HOME/.bash_history}"
     local tmp_out
     tmp_out=$(mktemp /tmp/ghost_out.XXXXXX 2>/dev/null || echo "/tmp/ghost_out_$$")
 
-    # Run Zig frontend with full TTY ownership
-    "$_GHOST_BIN" --prompt "$prompt_expanded" --histfile "$hist_file" --output "$tmp_out" </dev/tty >/dev/tty 2>/dev/null
-    local status=$?
+    while true; do
+        # Flush current session history to disk so Zig can access the latest commands
+        history -a 2>/dev/null
 
-    if (( status == 0 )) && [[ -f "$tmp_out" ]]; then
-        local cmd
-        cmd=$(<"$tmp_out")
-        rm -f "$tmp_out" 2>/dev/null
-        # Immediately write command into history and execute it in Bash
-        if [[ -n "$cmd" ]]; then
-            history -s "$cmd" 2>/dev/null
-            eval "$cmd"
+        local prompt_expanded
+        prompt_expanded="${PS1@P}"
+
+        # Run Zig frontend with full TTY ownership
+        "$_GHOST_BIN" --prompt "$prompt_expanded" --histfile "$hist_file" --output "$tmp_out" </dev/tty >/dev/tty 2>/dev/null
+        local status=$?
+
+        if (( status == 0 )) && [[ -f "$tmp_out" ]]; then
+            local cmd
+            cmd=$(<"$tmp_out")
+            rm -f "$tmp_out" 2>/dev/null
+            if [[ -n "$cmd" ]]; then
+                history -s "$cmd" 2>/dev/null
+                history -a 2>/dev/null
+                eval "$cmd"
+            fi
+        elif (( status == 1 )); then
+            # Ctrl-D on empty line (EOF) -> exit shell immediately
+            rm -f "$tmp_out" 2>/dev/null
+            exit 0
+        elif (( status == 130 )); then
+            rm -f "$tmp_out" 2>/dev/null
+            continue
+        else
+            rm -f "$tmp_out" 2>/dev/null
+            break
         fi
-    elif (( status == 130 )); then
-        rm -f "$tmp_out" 2>/dev/null
-    else
-        rm -f "$tmp_out" 2>/dev/null
-    fi
+    done
 }
 
 if [[ "${PROMPT_COMMAND@a}" == *a* ]]; then

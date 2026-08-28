@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux
+          strip zig-out/bin/ghost
+          cp zig-out/bin/ghost dist/ghost-x86_64-linux
+
+      - name: Compress
+        run: |
+          cp dist/ghost-x86_64-linux dist/ghost-x86_64-linux-upx
+          upx --best --lzma dist/ghost-x86_64-linux-upx
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ghost-x86_64-linux
+            dist/ghost-x86_64-linux-upx
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

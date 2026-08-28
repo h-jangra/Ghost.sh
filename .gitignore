@@ -1,1 +1,6 @@
 /target
+/ghost.o
+/ghost
+
+.zig-cache/
+zig-out/
