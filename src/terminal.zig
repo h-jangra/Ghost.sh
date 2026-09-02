@@ -3,14 +3,24 @@ const posix = std.posix;
 
 pub var global_term_ptr: ?*Term = null;
 
-pub fn sigintHandler(_: c_int) callconv(.C) void {
+pub fn sigintHandler(_: posix.SIG) callconv(.c) void {
     if (global_term_ptr) |t| t.deinit();
-    std.posix.exit(130);
+    std.process.exit(130);
 }
 
-pub fn sigtermHandler(_: c_int) callconv(.C) void {
+pub fn sigtermHandler(_: posix.SIG) callconv(.c) void {
     if (global_term_ptr) |t| t.deinit();
-    std.posix.exit(143);
+    std.process.exit(143);
+}
+
+pub fn writeAll(fd: posix.fd_t, bytes: []const u8) void {
+    var total: usize = 0;
+    while (total < bytes.len) {
+        const rc = posix.system.write(fd, bytes.ptr + total, bytes.len - total);
+        if (posix.errno(rc) != .SUCCESS) break;
+        if (rc == 0) break;
+        total += @intCast(rc);
+    }
 }
 
 pub const Term = struct {
@@ -38,9 +48,9 @@ pub const Term = struct {
 
     pub fn deinit(self: *Term) void {
         self.disableRaw();
-        _ = posix.write(self.tty_fd, "\x1b[?2004l\x1b[?25h") catch {};
+        writeAll(self.tty_fd, "\x1b[?2004l\x1b[?25h");
         if (self.owns_fd) {
-            posix.close(self.tty_fd);
+            _ = posix.system.close(self.tty_fd);
             self.owns_fd = false;
         }
     }
@@ -68,18 +78,18 @@ pub const Term = struct {
 
         try posix.tcsetattr(self.tty_fd, .FLUSH, raw);
         self.raw_active = true;
-        _ = posix.write(self.tty_fd, "\x1b[?2004h") catch {};
+        writeAll(self.tty_fd, "\x1b[?2004h");
     }
 
     pub fn disableRaw(self: *Term) void {
         if (!self.raw_active) return;
-        _ = posix.write(self.tty_fd, "\x1b[?2004l\x1b[?25h") catch {};
+        writeAll(self.tty_fd, "\x1b[?2004l\x1b[?25h");
         posix.tcsetattr(self.tty_fd, .FLUSH, self.orig_termios) catch {};
         self.raw_active = false;
     }
 
     pub fn suspendRaw(self: *Term) void {
-        _ = posix.write(self.tty_fd, "\r\x1b[2K") catch {};
+        writeAll(self.tty_fd, "\r\x1b[2K");
         self.disableRaw();
     }
 

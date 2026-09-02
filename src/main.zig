@@ -18,12 +18,10 @@ fn cancelLine(editor: *Editor) !void {
     editor.ghost_suggestion = null;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try init.minimal.args.iterateAllocator(allocator);
     defer args.deinit();
     _ = args.next();
 
@@ -48,28 +46,28 @@ pub fn main() !void {
 
     const sa_int = posix.Sigaction{
         .handler = .{ .handler = terminal.sigintHandler },
-        .mask = posix.empty_sigset,
+        .mask = std.mem.zeroes(posix.system.sigset_t),
         .flags = 0,
     };
     posix.sigaction(posix.SIG.INT, &sa_int, null);
     const sa_term = posix.Sigaction{
         .handler = .{ .handler = terminal.sigtermHandler },
-        .mask = posix.empty_sigset,
+        .mask = std.mem.zeroes(posix.system.sigset_t),
         .flags = 0,
     };
     posix.sigaction(posix.SIG.TERM, &sa_term, null);
 
     try term.enableRaw();
 
-    var editor = Editor.init(allocator, &term, prompt);
+    var editor = Editor.init(allocator, init.io, init.minimal.environ, &term, prompt);
     defer editor.deinit();
 
     if (hist_file) |hf| {
         editor.loadHistoryFromFile(hf);
     } else {
-        if (std.posix.getenv("HISTFILE")) |hf| {
+        if (init.minimal.environ.getPosix("HISTFILE")) |hf| {
             editor.loadHistoryFromFile(hf);
-        } else if (std.posix.getenv("HOME")) |home| {
+        } else if (init.minimal.environ.getPosix("HOME")) |home| {
             var buf: [512]u8 = undefined;
             const hf = std.fmt.bufPrint(&buf, "{s}/.bash_history", .{home}) catch null;
             if (hf) |p| editor.loadHistoryFromFile(p);
@@ -231,11 +229,11 @@ pub fn main() !void {
                     if (!editor.in_completion and layout.vis_rows > 0) {
                         var pre_scroll: usize = 0;
                         while (pre_scroll < layout.vis_rows) : (pre_scroll += 1) {
-                            _ = posix.write(term.tty_fd, "\n") catch {};
+                            terminal.writeAll(term.tty_fd, "\n");
                         }
                         var up_buf: [32]u8 = undefined;
                         const up_seq = std.fmt.bufPrint(&up_buf, "\x1b[{d}A", .{layout.vis_rows}) catch "";
-                        _ = posix.write(term.tty_fd, up_seq) catch {};
+                        terminal.writeAll(term.tty_fd, up_seq);
                     }
 
                     editor.in_completion = true;
@@ -272,19 +270,19 @@ pub fn main() !void {
     }
 
     editor.cleanMenu();
-    _ = posix.write(term.tty_fd, "\n\r") catch {};
+    terminal.writeAll(term.tty_fd, "\n\r");
     term.disableRaw();
 
     if (accepted) {
         if (output_file) |out_path| {
-            const out_f = try std.fs.cwd().createFile(out_path, .{ .truncate = true });
-            defer out_f.close();
-            try out_f.writeAll(editor.buffer.items);
-            try out_f.writeAll("\n");
+            var out_content = editor_mod.ArrayList(u8).init(allocator);
+            defer out_content.deinit();
+            try out_content.appendSlice(editor.buffer.items);
+            try out_content.append('\n');
+            try editor_mod.writeFile(out_path, out_content.items);
         } else {
-            const stdout = std.io.getStdOut().writer();
-            try stdout.writeAll(editor.buffer.items);
-            try stdout.writeAll("\n");
+            terminal.writeAll(posix.STDOUT_FILENO, editor.buffer.items);
+            terminal.writeAll(posix.STDOUT_FILENO, "\n");
         }
         return;
     }

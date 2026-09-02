@@ -1,34 +1,91 @@
 const std = @import("std");
 const posix = std.posix;
-const Term = @import("terminal.zig").Term;
+const terminal = @import("terminal.zig");
+const Term = terminal.Term;
 const completion = @import("completion.zig");
+
+pub fn ArrayList(comptime T: type) type {
+    return std.array_list.AlignedManaged(T, null);
+}
+
+pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_size: usize) ?[]u8 {
+    var path_z: [4096:0]u8 = undefined;
+    if (path.len >= path_z.len) return null;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const fd = posix.system.open(&path_z, posix.system.O{ .ACCMODE = .RDONLY }, 0);
+    if (posix.errno(fd) != .SUCCESS) return null;
+    defer _ = posix.system.close(@intCast(fd));
+
+    var list = ArrayList(u8).init(allocator);
+    defer list.deinit();
+
+    var chunk: [4096]u8 = undefined;
+    while (list.items.len < max_size) {
+        const to_read = @min(chunk.len, max_size - list.items.len);
+        const rc = posix.system.read(@intCast(fd), &chunk, to_read);
+        if (posix.errno(rc) != .SUCCESS or rc == 0) break;
+        const n: usize = @intCast(rc);
+        list.appendSlice(chunk[0..n]) catch break;
+    }
+    return list.toOwnedSlice() catch null;
+}
+
+pub fn writeFile(path: []const u8, content: []const u8) !void {
+    var path_z: [4096:0]u8 = undefined;
+    if (path.len >= path_z.len) return error.PathTooLong;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const fd = posix.system.open(&path_z, posix.system.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+    if (posix.errno(fd) != .SUCCESS) return error.OpenFailed;
+    defer _ = posix.system.close(@intCast(fd));
+
+    var total_written: usize = 0;
+    while (total_written < content.len) {
+        const rc = posix.system.write(@intCast(fd), content.ptr + total_written, content.len - total_written);
+        if (posix.errno(rc) != .SUCCESS or rc == 0) return error.WriteFailed;
+        total_written += @intCast(rc);
+    }
+}
+
+pub fn deleteFile(path: []const u8) void {
+    var path_z: [4096:0]u8 = undefined;
+    if (path.len >= path_z.len) return;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    _ = posix.system.unlink(&path_z);
+}
 
 pub const Editor = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
     term: *const Term,
     prompt_prefix: []const u8,
     prompt_last_line: []const u8,
     first_render: bool = true,
-    buffer: std.ArrayList(u8),
+    buffer: ArrayList(u8),
     cursor_pos: usize = 0,
-    history: std.ArrayList([]const u8),
+    history: ArrayList([]const u8),
     hist_index: ?usize = null,
-    saved_input: std.ArrayList(u8),
+    saved_input: ArrayList(u8),
     ghost_suggestion: ?[]const u8 = null,
 
     in_completion: bool = false,
-    candidates: std.ArrayList([]const u8),
+    candidates: ArrayList([]const u8),
     selected_candidate: usize = 0,
     comp_start_byte: usize = 0,
     rendered_menu_rows: usize = 0,
     in_paste: bool = false,
     in_isearch: bool = false,
-    isearch_query: std.ArrayList(u8),
+    isearch_query: ArrayList(u8),
     isearch_match_index: ?usize = null,
 
-    render_buf: std.ArrayList(u8),
+    render_buf: ArrayList(u8),
 
-    pub fn init(allocator: std.mem.Allocator, term: *const Term, prompt: []const u8) Editor {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ, term: *const Term, prompt: []const u8) Editor {
         var prefix: []const u8 = "";
         var last: []const u8 = prompt;
         if (std.mem.lastIndexOfScalar(u8, prompt, '\n')) |idx| {
@@ -37,16 +94,18 @@ pub const Editor = struct {
         }
         return Editor{
             .allocator = allocator,
+            .io = io,
+            .environ = environ,
             .term = term,
             .prompt_prefix = prefix,
             .prompt_last_line = last,
             .first_render = true,
-            .buffer = std.ArrayList(u8).init(allocator),
-            .history = std.ArrayList([]const u8).init(allocator),
-            .saved_input = std.ArrayList(u8).init(allocator),
-            .candidates = std.ArrayList([]const u8).init(allocator),
-            .isearch_query = std.ArrayList(u8).init(allocator),
-            .render_buf = std.ArrayList(u8).init(allocator),
+            .buffer = ArrayList(u8).init(allocator),
+            .history = ArrayList([]const u8).init(allocator),
+            .saved_input = ArrayList(u8).init(allocator),
+            .candidates = ArrayList([]const u8).init(allocator),
+            .isearch_query = ArrayList(u8).init(allocator),
+            .render_buf = ArrayList(u8).init(allocator),
         };
     }
 
@@ -62,17 +121,14 @@ pub const Editor = struct {
     }
 
     pub fn loadHistoryFromFile(self: *Editor, path: []const u8) void {
-        const file = std.fs.cwd().openFile(path, .{}) catch return;
-        defer file.close();
+        const content = readFileAlloc(self.allocator, path, 2 * 1024 * 1024) orelse return;
+        defer self.allocator.free(content);
 
-        var buf_reader = std.io.bufferedReader(file.reader());
-        var r = buf_reader.reader();
-
-        var lines = std.ArrayList([]const u8).init(self.allocator);
+        var lines = ArrayList([]const u8).init(self.allocator);
         defer lines.deinit();
 
-        var line_buf: [4096]u8 = undefined;
-        while (r.readUntilDelimiterOrEof(&line_buf, '\n') catch null) |line| {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |line| {
             var trimmed = std.mem.trim(u8, line, " \t\r\n");
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
             if (trimmed[0] >= '0' and trimmed[0] <= '9') {
@@ -140,7 +196,7 @@ pub const Editor = struct {
     pub fn collectCompletions(self: *Editor) void {
         self.clearCandidates();
         self.comp_start_byte = completion.findCompletionStart(self.buffer.items, self.cursor_pos);
-        completion.collectCompletions(self.allocator, &self.candidates, self.buffer.items, self.cursor_pos);
+        completion.collectCompletions(self.allocator, self.io, &self.candidates, self.buffer.items, self.cursor_pos);
     }
 
     pub fn insertChar(self: *Editor, cp: u21) !void {
@@ -287,56 +343,69 @@ pub const Editor = struct {
     }
 
     pub fn clearScreen(self: *Editor) !void {
-        _ = posix.write(self.term.tty_fd, "\x1b[2J\x1b[H") catch {};
+        terminal.writeAll(self.term.tty_fd, "\x1b[2J\x1b[H");
         self.first_render = true;
     }
 
     pub fn cleanMenu(self: *Editor) void {
         if (self.rendered_menu_rows > 0) {
-            var clear_buf: [64]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&clear_buf);
-            const render = @import("render.zig");
-            render.writeClearMenu(fbs.writer(), self.rendered_menu_rows) catch {};
-            _ = posix.write(self.term.tty_fd, fbs.getWritten()) catch {};
+            var clear_buf = ArrayList(u8).init(self.allocator);
+            defer clear_buf.deinit();
+            var bw = @import("render.zig").BufWriter{ .list = &clear_buf };
+            @import("render.zig").writeClearMenu(&bw, self.rendered_menu_rows) catch {};
+            terminal.writeAll(self.term.tty_fd, clear_buf.items);
             self.rendered_menu_rows = 0;
         }
     }
 
     pub fn editAndExecute(self: *Editor) !bool {
-        const editor_cmd = std.posix.getenv("VISUAL") orelse
-            std.posix.getenv("EDITOR") orelse
+        const editor_cmd = self.environ.getPosix("VISUAL") orelse
+            self.environ.getPosix("EDITOR") orelse
             "nano";
 
         var tmp_buf: [128]u8 = undefined;
-        const pid = std.os.linux.getpid();
+        const pid = posix.system.getpid();
         const tmp_path = try std.fmt.bufPrint(&tmp_buf, "/tmp/ghost_edit_{d}.sh", .{pid});
 
-        {
-            const f = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-            defer f.close();
-            try f.writeAll(self.buffer.items);
-            try f.writeAll("\n");
-        }
-        defer std.fs.cwd().deleteFile(tmp_path) catch {};
+        var tmp_content = ArrayList(u8).init(self.allocator);
+        defer tmp_content.deinit();
+        try tmp_content.appendSlice(self.buffer.items);
+        try tmp_content.append('\n');
+
+        try writeFile(tmp_path, tmp_content.items);
+        defer deleteFile(tmp_path);
 
         var term_ptr = @constCast(self.term);
         self.cleanMenu();
         term_ptr.suspendRaw();
 
-        var child = std.process.Child.init(&[_][]const u8{ editor_cmd, tmp_path }, self.allocator);
-        _ = child.spawnAndWait() catch {
-            var fallback = std.process.Child.init(&[_][]const u8{ "vi", tmp_path }, self.allocator);
-            _ = fallback.spawnAndWait() catch {};
-        };
+        var child_opt = std.process.spawn(self.io, .{
+            .argv = &[_][]const u8{ editor_cmd, tmp_path },
+            .stdin = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch null;
+
+        if (child_opt) |*child| {
+            _ = child.wait(self.io) catch {};
+        } else {
+            var fallback = std.process.spawn(self.io, .{
+                .argv = &[_][]const u8{ "vi", tmp_path },
+                .stdin = .inherit,
+                .stdout = .inherit,
+                .stderr = .inherit,
+            }) catch null;
+            if (fallback) |*fb| {
+                _ = fb.wait(self.io) catch {};
+            }
+        }
 
         try term_ptr.resumeRaw();
 
-        const f = std.fs.cwd().openFile(tmp_path, .{}) catch return false;
-        defer f.close();
-        const content = f.readToEndAlloc(self.allocator, 1024 * 1024) catch return false;
+        const content = readFileAlloc(self.allocator, tmp_path, 1024 * 1024) orelse return false;
         defer self.allocator.free(content);
 
-        const trimmed = std.mem.trimRight(u8, content, " \t\r\n");
+        const trimmed = std.mem.trimEnd(u8, content, " \t\r\n");
         self.buffer.clearRetainingCapacity();
         try self.buffer.appendSlice(trimmed);
         self.cursor_pos = self.buffer.items.len;
@@ -349,7 +418,7 @@ pub const Editor = struct {
     pub fn historySearchInteractive(self: *Editor) !bool {
         if (self.history.items.len == 0) return false;
 
-        if (std.posix.getenv("GHOST_CTRL_R_COMMAND")) |cmd| {
+        if (self.environ.getPosix("GHOST_CTRL_R_COMMAND")) |cmd| {
             if (cmd.len > 0) {
                 var term_ptr = @constCast(self.term);
                 self.cleanMenu();
@@ -357,48 +426,52 @@ pub const Editor = struct {
 
                 var selected_opt: ?[]const u8 = null;
 
-                var child = std.process.Child.init(&[_][]const u8{
-                    "bash",
-                    "--norc",
-                    "-c",
-                    "eval \"$GHOST_CTRL_R_COMMAND\"",
-                    "_",
-                    self.buffer.items,
-                }, self.allocator);
+                var child_res = std.process.spawn(self.io, .{
+                    .argv = &[_][]const u8{
+                        "bash",
+                        "--norc",
+                        "-c",
+                        "eval \"$GHOST_CTRL_R_COMMAND\"",
+                        "_",
+                        self.buffer.items,
+                    },
+                    .stdin = .pipe,
+                    .stdout = .pipe,
+                    .stderr = .inherit,
+                }) catch null;
 
-                child.stdin_behavior = .Pipe;
-                child.stdout_behavior = .Pipe;
-                child.stderr_behavior = .Inherit;
-
-                if (child.spawn()) {
-                    if (child.stdin) |*stdin_pipe| {
+                if (child_res) |*child| {
+                    if (child.stdin) |stdin_file| {
                         for (self.history.items) |h| {
-                            _ = stdin_pipe.write(h) catch break;
-                            _ = stdin_pipe.write("\n") catch break;
+                            terminal.writeAll(stdin_file.handle, h);
+                            terminal.writeAll(stdin_file.handle, "\n");
                         }
-                        stdin_pipe.close();
+                        _ = posix.system.close(stdin_file.handle);
                         child.stdin = null;
                     }
 
-                    var out_list = std.ArrayList(u8).init(self.allocator);
+                    var out_list = ArrayList(u8).init(self.allocator);
                     defer out_list.deinit();
 
-                    if (child.stdout) |*stdout_pipe| {
+                    if (child.stdout) |stdout_file| {
                         var buf: [1024]u8 = undefined;
                         while (true) {
-                            const n = stdout_pipe.read(&buf) catch break;
-                            if (n == 0) break;
+                            const rc = posix.system.read(stdout_file.handle, &buf, buf.len);
+                            if (posix.errno(rc) != .SUCCESS or rc == 0) break;
+                            const n: usize = @intCast(rc);
                             out_list.appendSlice(buf[0..n]) catch break;
                         }
+                        _ = posix.system.close(stdout_file.handle);
+                        child.stdout = null;
                     }
 
-                    const term_res = child.wait() catch null;
+                    const term_res = child.wait(self.io) catch null;
                     if (term_res) |res| {
-                        if (res == .Exited and res.Exited == 0 and out_list.items.len > 0) {
-                            selected_opt = self.allocator.dupe(u8, std.mem.trimRight(u8, out_list.items, "\r\n")) catch null;
+                        if (res == .exited and res.exited == 0 and out_list.items.len > 0) {
+                            selected_opt = self.allocator.dupe(u8, std.mem.trimEnd(u8, out_list.items, "\r\n")) catch null;
                         }
                     }
-                } else |_| {}
+                }
 
                 try term_ptr.resumeRaw();
 

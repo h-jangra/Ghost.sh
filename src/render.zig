@@ -1,6 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
-const Term = @import("terminal.zig").Term;
+const terminal = @import("terminal.zig");
 const Editor = @import("editor.zig").Editor;
 
 pub const MenuLayout = struct {
@@ -113,9 +113,30 @@ pub fn getMaxCandidateWidth(candidates: []const []const u8) usize {
     return max_len;
 }
 
+const editor_mod = @import("editor.zig");
+
+pub const BufWriter = struct {
+    list: *editor_mod.ArrayList(u8),
+
+    pub fn writeAll(self: *BufWriter, bytes: []const u8) !void {
+        try self.list.appendSlice(bytes);
+    }
+
+    pub fn print(self: *BufWriter, comptime format: []const u8, args: anytype) !void {
+        var buf: [512]u8 = undefined;
+        const formatted = std.fmt.bufPrint(&buf, format, args) catch {
+            const alloc_formatted = try std.fmt.allocPrint(self.list.allocator, format, args);
+            defer self.list.allocator.free(alloc_formatted);
+            try self.list.appendSlice(alloc_formatted);
+            return;
+        };
+        try self.list.appendSlice(formatted);
+    }
+};
+
 pub fn renderEditor(editor: *Editor) !void {
     editor.render_buf.clearRetainingCapacity();
-    var w = editor.render_buf.writer();
+    var w = BufWriter{ .list = &editor.render_buf };
 
     const ws = editor.term.getWindowSize();
     const term_cols: usize = if (ws.cols > 0) @as(usize, ws.cols) else 80;
@@ -151,7 +172,7 @@ pub fn renderEditor(editor: *Editor) !void {
             try w.print("\x1b[{d}C", .{total_offset});
         }
         try w.writeAll("\x1b[?25h");
-        _ = posix.write(editor.term.tty_fd, editor.render_buf.items) catch {};
+        terminal.writeAll(editor.term.tty_fd, editor.render_buf.items);
         return;
     }
 
@@ -240,5 +261,5 @@ pub fn renderEditor(editor: *Editor) !void {
     }
 
     try w.writeAll("\x1b[?25h");
-    _ = posix.write(editor.term.tty_fd, editor.render_buf.items) catch {};
+    terminal.writeAll(editor.term.tty_fd, editor.render_buf.items);
 }

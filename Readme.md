@@ -8,6 +8,7 @@ Ghost is a lightweight interactive frontend for Bash written in Zig. It replaces
 
 * **Ghost suggestions** — Inline autosuggestions from command history (`→` / `End` to accept fully, `Alt`+`F` for next word).
 * **Interactive completions** — Multi-column menu navigable with arrow keys, `Tab`, and `Shift`+`Tab`.
+* **Fuzzy & case-insensitive navigation** — Smart path resolution supporting case-insensitive prefix, substring (e.g. `cd own` → `Downloads/`), and multi-segment fuzzy matching.
 * **Bash programmable completion support** — Works with standard Bash completions (`complete`, `compgen`, `bash-completion`).
 * **UTF-8 & wide character support** — Cursor and layout handling for multi-byte, wide, and emoji characters.
 * **Bracketed paste** — Pastes multi-line text safely into the buffer.
