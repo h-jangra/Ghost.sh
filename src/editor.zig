@@ -72,6 +72,8 @@ pub const Editor = struct {
     hist_index: ?usize = null,
     saved_input: ArrayList(u8),
     ghost_suggestion: ?[]const u8 = null,
+    ghost_buf: ArrayList(u8),
+    command_cache: completion.CommandCache,
 
     in_completion: bool = false,
     candidates: ArrayList([]const u8),
@@ -92,7 +94,7 @@ pub const Editor = struct {
             prefix = prompt[0 .. idx + 1];
             last = prompt[idx + 1 ..];
         }
-        return Editor{
+        var ed = Editor{
             .allocator = allocator,
             .io = io,
             .environ = environ,
@@ -106,7 +108,11 @@ pub const Editor = struct {
             .candidates = ArrayList([]const u8).init(allocator),
             .isearch_query = ArrayList(u8).init(allocator),
             .render_buf = ArrayList(u8).init(allocator),
+            .command_cache = completion.CommandCache.init(allocator),
+            .ghost_buf = ArrayList(u8).init(allocator),
         };
+        ed.command_cache.load(environ);
+        return ed;
     }
 
     pub fn deinit(self: *Editor) void {
@@ -118,6 +124,8 @@ pub const Editor = struct {
         self.candidates.deinit();
         self.isearch_query.deinit();
         self.render_buf.deinit();
+        self.command_cache.deinit();
+        self.ghost_buf.deinit();
     }
 
     pub fn loadHistoryFromFile(self: *Editor, path: []const u8) void {
@@ -173,16 +181,49 @@ pub const Editor = struct {
 
     pub fn updateGhost(self: *Editor) void {
         self.ghost_suggestion = null;
-        if (self.in_completion or self.in_paste) return;
+        self.ghost_buf.clearRetainingCapacity();
+        if (self.in_completion or self.in_paste or self.in_isearch) return;
         if (self.cursor_pos != self.buffer.items.len) return;
         if (self.buffer.items.len == 0) return;
 
         const input = self.buffer.items;
+
+        // 1. History match (highest priority)
         for (self.history.items) |h| {
             if (std.mem.startsWith(u8, h, input) and h.len > input.len) {
                 self.ghost_suggestion = h[input.len..];
                 return;
             }
+        }
+
+        // 2. Command match (if at command position: start of line, after pipe, &&, ;, etc.)
+        const pos_info = completion.getCommandPositionInfo(input);
+        if (pos_info.is_command_position and pos_info.prefix.len > 0) {
+            if (std.mem.indexOfScalar(u8, pos_info.prefix, '/') != null or std.mem.startsWith(u8, pos_info.prefix, "~")) {
+                var path_buf: [512]u8 = undefined;
+                if (completion.findPathMatch(self.environ, pos_info.prefix, &path_buf)) |sugg| {
+                    self.ghost_buf.appendSlice(sugg) catch return;
+                    self.ghost_suggestion = self.ghost_buf.items;
+                    return;
+                }
+            } else {
+                if (self.command_cache.findMatch(pos_info.prefix)) |full_cmd| {
+                    if (full_cmd.len > pos_info.prefix.len) {
+                        const suffix = full_cmd[pos_info.prefix.len..];
+                        self.ghost_buf.appendSlice(suffix) catch return;
+                        self.ghost_suggestion = self.ghost_buf.items;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 3. File / Directory / Argument match
+        var arg_buf: [512]u8 = undefined;
+        if (completion.findArgumentPathMatch(self.environ, input, &arg_buf)) |sugg| {
+            self.ghost_buf.appendSlice(sugg) catch return;
+            self.ghost_suggestion = self.ghost_buf.items;
+            return;
         }
     }
 
@@ -657,3 +698,74 @@ pub const Editor = struct {
         if (tail.len > 0) self.buffer.appendSlice(tail) catch return;
     }
 };
+
+test "Editor updateGhost history match" {
+    const allocator = std.testing.allocator;
+    const term = try Term.init();
+    defer @constCast(&term).deinit();
+
+    var editor = Editor.init(allocator, std.testing.io, std.process.Environ.empty, &term, "> ");
+    defer editor.deinit();
+
+    const h1 = try allocator.dupe(u8, "git checkout -b feature-test");
+    try editor.history.append(h1);
+
+    try editor.buffer.appendSlice("git che");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expectEqualStrings("ckout -b feature-test", editor.ghost_suggestion.?);
+
+    editor.acceptGhost();
+    try std.testing.expectEqualStrings("git checkout -b feature-test", editor.buffer.items);
+    try std.testing.expectEqual(editor.buffer.items.len, editor.cursor_pos);
+    try std.testing.expect(editor.ghost_suggestion == null);
+}
+
+test "Editor updateGhost command fallback and pipes" {
+    const allocator = std.testing.allocator;
+    const term = try Term.init();
+    defer @constCast(&term).deinit();
+
+    var editor = Editor.init(allocator, std.testing.io, std.process.Environ.empty, &term, "> ");
+    defer editor.deinit();
+
+    // No history -> command fallback
+    try editor.buffer.appendSlice("gi");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expectEqualStrings("t", editor.ghost_suggestion.?);
+
+    // After pipe
+    editor.buffer.clearRetainingCapacity();
+    try editor.buffer.appendSlice("cat /etc/hosts | gr");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expectEqualStrings("ep", editor.ghost_suggestion.?);
+
+    editor.acceptGhost();
+    try std.testing.expectEqualStrings("cat /etc/hosts | grep", editor.buffer.items);
+
+    // After chain operator &&
+    editor.buffer.clearRetainingCapacity();
+    try editor.buffer.appendSlice("cd /tmp && mk");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expectEqualStrings("dir", editor.ghost_suggestion.?);
+
+    // Argument file path
+    editor.buffer.clearRetainingCapacity();
+    try editor.buffer.appendSlice("cat src/com");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expectEqualStrings("pletion.zig", editor.ghost_suggestion.?);
+}
