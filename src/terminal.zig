@@ -17,8 +17,7 @@ pub fn writeAll(fd: posix.fd_t, bytes: []const u8) void {
     var total: usize = 0;
     while (total < bytes.len) {
         const rc = posix.system.write(fd, bytes.ptr + total, bytes.len - total);
-        if (posix.errno(rc) != .SUCCESS) break;
-        if (rc == 0) break;
+        if (posix.errno(rc) != .SUCCESS or rc == 0) break;
         total += @intCast(rc);
     }
 }
@@ -28,6 +27,9 @@ pub const Term = struct {
     raw_active: bool = false,
     tty_fd: posix.fd_t,
     owns_fd: bool = false,
+    in_buf: [512]u8 = undefined,
+    in_head: usize = 0,
+    in_tail: usize = 0,
 
     pub fn init() !Term {
         const rc = posix.system.open("/dev/tty", posix.system.O{ .ACCMODE = .RDWR }, 0);
@@ -37,9 +39,8 @@ pub const Term = struct {
             fd = @intCast(rc);
             owns = true;
         }
-        const orig = try posix.tcgetattr(fd);
         return Term{
-            .orig_termios = orig,
+            .orig_termios = try posix.tcgetattr(fd),
             .raw_active = false,
             .tty_fd = fd,
             .owns_fd = owns,
@@ -58,26 +59,24 @@ pub const Term = struct {
     pub fn enableRaw(self: *Term) !void {
         if (self.raw_active) return;
         var raw = self.orig_termios;
-
         raw.iflag.BRKINT = false;
         raw.iflag.ICRNL = false;
         raw.iflag.INPCK = false;
         raw.iflag.ISTRIP = false;
         raw.iflag.IXON = false;
-
         raw.oflag.OPOST = true;
         raw.cflag.CSIZE = .CS8;
-
         raw.lflag.ECHO = false;
         raw.lflag.ICANON = false;
         raw.lflag.IEXTEN = false;
         raw.lflag.ISIG = false;
-
         raw.cc[@intFromEnum(posix.V.MIN)] = 1;
         raw.cc[@intFromEnum(posix.V.TIME)] = 0;
 
         try posix.tcsetattr(self.tty_fd, .FLUSH, raw);
         self.raw_active = true;
+        self.in_head = 0;
+        self.in_tail = 0;
         writeAll(self.tty_fd, "\x1b[?2004h");
     }
 
@@ -100,24 +99,28 @@ pub const Term = struct {
     pub fn getWindowSize(self: *const Term) struct { rows: u16, cols: u16 } {
         var ws: posix.winsize = undefined;
         const rc = posix.system.ioctl(self.tty_fd, posix.T.IOCGWINSZ, @intFromPtr(&ws));
-        if (rc == 0 and ws.col > 0) {
-            return .{ .rows = ws.row, .cols = ws.col };
-        }
-        return .{ .rows = 24, .cols = 80 };
+        return if (rc == 0 and ws.col > 0) .{ .rows = ws.row, .cols = ws.col } else .{ .rows = 24, .cols = 80 };
     }
 
-    pub fn readByte(self: *const Term, timeout_ms: i32) ?u8 {
-        var pfd = [1]posix.pollfd{.{
-            .fd = self.tty_fd,
-            .events = posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = posix.poll(&pfd, timeout_ms) catch return null;
-        if (ready <= 0) return null;
+    pub fn readByte(self: *Term, timeout_ms: i32) ?u8 {
+        if (self.in_head < self.in_tail) {
+            const b = self.in_buf[self.in_head];
+            self.in_head += 1;
+            return b;
+        }
 
-        var b: [1]u8 = undefined;
-        const n = posix.read(self.tty_fd, &b) catch return null;
+        self.in_head = 0;
+        self.in_tail = 0;
+
+        if (timeout_ms >= 0) {
+            var pfd = [1]posix.pollfd{.{ .fd = self.tty_fd, .events = posix.POLL.IN, .revents = 0 }};
+            if ((posix.poll(&pfd, timeout_ms) catch return null) <= 0) return null;
+        }
+
+        const n = posix.read(self.tty_fd, &self.in_buf) catch return null;
         if (n == 0) return null;
-        return b[0];
+        self.in_tail = n;
+        self.in_head = 1;
+        return self.in_buf[0];
     }
 };

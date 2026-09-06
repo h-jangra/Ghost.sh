@@ -30,8 +30,8 @@ Download the prebuilt binary and script from GitHub releases:
 
 ```bash
 sudo mkdir -p /usr/share/ghost
-sudo curl -fsSL https://github.com/h-jangra/Ghost.sh/releases/latest/download/ghost-x86_64-linux -o /usr/share/ghost/ghost
-sudo curl -fsSL https://raw.githubusercontent.com/h-jangra/Ghost.sh/main/ghost.sh -o /usr/share/ghost/ghost.sh
+sudo curl -fsSL https://github.com/h-jangra/ghost.sh/releases/latest/download/ghost-x86_64-linux -o /usr/share/ghost/ghost
+sudo curl -fsSL https://raw.githubusercontent.com/h-jangra/ghost.sh/main/ghost.sh -o /usr/share/ghost/ghost.sh
 sudo chmod 755 /usr/share/ghost/ghost
 sudo chmod 644 /usr/share/ghost/ghost.sh
 ```

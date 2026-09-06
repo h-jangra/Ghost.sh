@@ -4,6 +4,8 @@
 if [[ -z "${_GHOST_BIN:-}" ]]; then
     if [[ -x "$(dirname "${BASH_SOURCE[0]}")/ghost" ]]; then
         _GHOST_BIN="$(dirname "${BASH_SOURCE[0]}")/ghost"
+    elif [[ -x "$(dirname "${BASH_SOURCE[0]}")/zig-out/bin/ghost" ]]; then
+        _GHOST_BIN="$(dirname "${BASH_SOURCE[0]}")/zig-out/bin/ghost"
     else
         _GHOST_BIN="ghost"
     fi
@@ -17,7 +19,11 @@ _ghost_readline_hook() {
 
     local hist_file="${HISTFILE:-$HOME/.bash_history}"
     local tmp_out
-    tmp_out=$(mktemp /tmp/ghost_out.XXXXXX 2>/dev/null || echo "/tmp/ghost_out_$$")
+    if [[ -d /dev/shm && -w /dev/shm ]]; then
+        tmp_out="/dev/shm/ghost_out_$$"
+    else
+        tmp_out="/tmp/ghost_out_$$"
+    fi
 
     while true; do
         # Flush current session history to disk so Zig can access the latest commands
@@ -33,7 +39,7 @@ _ghost_readline_hook() {
         if (( status == 0 )) && [[ -f "$tmp_out" ]]; then
             local cmd
             cmd=$(<"$tmp_out")
-            rm -f "$tmp_out" 2>/dev/null
+            > "$tmp_out"
             if [[ -n "$cmd" ]]; then
                 history -s "$cmd" 2>/dev/null
                 history -a 2>/dev/null
@@ -44,13 +50,14 @@ _ghost_readline_hook() {
             rm -f "$tmp_out" 2>/dev/null
             exit 0
         elif (( status == 130 )); then
-            rm -f "$tmp_out" 2>/dev/null
+            > "$tmp_out"
             continue
         else
             rm -f "$tmp_out" 2>/dev/null
             break
         fi
     done
+    rm -f "$tmp_out" 2>/dev/null
 }
 
 if [[ "${PROMPT_COMMAND@a}" == *a* ]]; then

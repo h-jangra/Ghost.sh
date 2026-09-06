@@ -1,137 +1,7 @@
 const std = @import("std");
+const posix = std.posix;
 
 const BASH_COMPLETION_SCRIPT =
-    \\fuzzy_expand_path() {
-    \\    local raw_path="$1"
-    \\    local dirs_only="${2:-1}"
-    \\    local home="${HOME:-}"
-    \\
-    \\    local path_to_expand="$raw_path"
-    \\    local expanded_prefix=""
-    \\    local root_dir="."
-    \\
-    \\    if [[ "$path_to_expand" == "~/"* ]]; then
-    \\        expanded_prefix="~/"
-    \\        path_to_expand="${path_to_expand:2}"
-    \\        root_dir="$home"
-    \\    elif [[ "$path_to_expand" == "~" ]]; then
-    \\        printf "%s\n" "~/"
-    \\        return
-    \\    elif [[ "$path_to_expand" == "/"* ]]; then
-    \\        expanded_prefix="/"
-    \\        path_to_expand="${path_to_expand:1}"
-    \\        root_dir="/"
-    \\    fi
-    \\
-    \\    while true; do
-    \\        if [[ "$path_to_expand" == "../"* ]]; then
-    \\            expanded_prefix="${expanded_prefix}../"
-    \\            path_to_expand="${path_to_expand:3}"
-    \\            root_dir="$root_dir/.."
-    \\        elif [[ "$path_to_expand" == ".." ]]; then
-    \\            printf "%s\n" "${expanded_prefix}../"
-    \\            return
-    \\        elif [[ "$path_to_expand" == "./"* ]]; then
-    \\            expanded_prefix="${expanded_prefix}./"
-    \\            path_to_expand="${path_to_expand:2}"
-    \\            root_dir="$root_dir/."
-    \\        elif [[ "$path_to_expand" == "." ]]; then
-    \\            printf "%s\n" "${expanded_prefix}./"
-    \\            return
-    \\        else
-    \\            break
-    \\        fi
-    \\    done
-    \\
-    \\    local -a segments=()
-    \\    if [[ -z "$path_to_expand" ]]; then
-    \\        segments=("")
-    \\    else
-    \\        local IFS="/"
-    \\        read -ra segments <<< "$path_to_expand"
-    \\        unset IFS
-    \\        [[ "$raw_path" =~ /$ ]] && segments+=("")
-    \\    fi
-    \\
-    \\    local -a current_paths=("$root_dir|$expanded_prefix|0")
-    \\
-    \\    for (( seg_i=0; seg_i<${#segments[@]}; seg_i++ )); do
-    \\        local seg="${segments[seg_i]}"
-    \\        local is_last=$(( seg_i == ${#segments[@]} - 1 ))
-    \\        local -a next_paths=()
-    \\
-    \\        local seg_lower="${seg,,}"
-    \\
-    \\        for item in "${current_paths[@]}"; do
-    \\            IFS="|" read -r disk_path disp_prefix cur_score <<< "$item"
-    \\            [[ ! -d "$disk_path" ]] && continue
-    \\
-    \\            shopt -s dotglob nullglob
-    \\            for entry_full in "$disk_path"/*; do
-    \\                local entry="${entry_full##*/}"
-    \\                [[ "$entry" == "." || "$entry" == ".." ]] && continue
-    \\                if [[ "$entry" == .* && "$seg" != .* ]]; then
-    \\                    continue
-    \\                fi
-    \\
-    \\                local is_dir=0
-    \\                [[ -d "$entry_full" ]] && is_dir=1
-    \\
-    \\                if (( dirs_only )) && (( !is_dir )); then
-    \\                    continue
-    \\                fi
-    \\
-    \\                local entry_lower="${entry,,}"
-    \\                local match_score=""
-    \\
-    \\                if [[ -z "$seg" ]]; then
-    \\                    match_score=0
-    \\                elif [[ "$entry" == "$seg" ]]; then
-    \\                    match_score=0
-    \\                elif [[ "$entry_lower" == "$seg_lower"* ]]; then
-    \\                    match_score=1
-    \\                elif [[ "$entry_lower" == *"$seg_lower"* ]]; then
-    \\                    match_score=2
-    \\                else
-    \\                    local p_idx=0
-    \\                    local matched=1
-    \\                    for (( ci=0; ci<${#seg_lower}; ci++ )); do
-    \\                        local ch="${seg_lower:ci:1}"
-    \\                        local rest="${entry_lower:p_idx}"
-    \\                        if [[ "$rest" == *"$ch"* ]]; then
-    \\                            local before="${rest%%"$ch"*}"
-    \\                            p_idx=$(( p_idx + ${#before} + 1 ))
-    \\                        else
-    \\                            matched=0
-    \\                            break
-    \\                        fi
-    \\                    done
-    \\                    if (( matched )); then
-    \\                        match_score=3
-    \\                    fi
-    \\                fi
-    \\
-    \\                if [[ -n "$match_score" ]]; then
-    \\                    local total_score=$(( cur_score * 10 + match_score ))
-    \\                    local next_disp="${disp_prefix}${entry}"
-    \\                    (( is_dir )) && next_disp="${next_disp}/"
-    \\                    next_paths+=("$entry_full|$next_disp|$total_score")
-    \\                fi
-    \\            done
-    \\            shopt -u dotglob nullglob
-    \\        done
-    \\
-    \\        current_paths=("${next_paths[@]}")
-    \\        (( ${#current_paths[@]} == 0 )) && break
-    \\    done
-    \\
-    \\    if (( ${#current_paths[@]} > 0 )); then
-    \\        printf "%s\n" "${current_paths[@]}" | sort -t"|" -k3,3n -k2,2 | while IFS="|" read -r d p s; do
-    \\            printf "%s\n" "$p"
-    \\        done
-    \\    fi
-    \\}
-    \\
     \\if [[ -n "${BASH_COMPLETION:-}" && -r "$BASH_COMPLETION" ]]; then
     \\    . "$BASH_COMPLETION" 2>/dev/null
     \\else
@@ -178,11 +48,7 @@ const BASH_COMPLETION_SCRIPT =
     \\fi
     \\
     \\raw=()
-    \\if [[ "$cmd" =~ ^(cd|pushd|rmdir|z|builtin[[:space:]]+cd)$ ]]; then
-    \\    is_file=0
-    \\    unesc="${cur//\\/}"
-    \\    mapfile -t raw < <(fuzzy_expand_path "$unesc" 1)
-    \\elif [[ "$comp_spec" =~ -F[[:space:]]+([^[:space:]]+) ]]; then
+    \\if [[ "$comp_spec" =~ -F[[:space:]]+([^[:space:]]+) ]]; then
     \\    func="${BASH_REMATCH[1]}"
     \\    if declare -F "$func" >/dev/null; then
     \\        COMP_LINE="$cmd_pre" COMP_POINT=${#cmd_pre} COMP_WORDS=("${words[@]}") COMP_CWORD=$cword COMP_KEY=9 COMP_TYPE=9 COMPREPLY=()
@@ -199,36 +65,16 @@ const BASH_COMPLETION_SCRIPT =
     \\    mapfile -t raw < <(compgen -A "${BASH_REMATCH[1]}" -- "$cur")
     \\fi
     \\
-    \\is_file=1
-    \\if (( ${#raw[@]} == 0 )); then
-    \\    unesc="${cur//\\/}"
-    \\    if (( cword <= 0 )) || [[ -z "$cmd" ]]; then
-    \\        is_file=0
-    \\        if [[ "$cur" == ./* || "$cur" == ../* || "$cur" == /* || "$cur" == ~* ]]; then
-    \\            is_file=1; mapfile -t raw < <(fuzzy_expand_path "$unesc" 0)
-    \\        else
-    \\            mapfile -t raw < <(compgen -c -a -b -k -- "$cur")
-    \\        fi
-    \\    elif [[ "$cur" == \$* ]]; then
-    \\        is_file=0; mapfile -t vraw < <(compgen -v -- "${cur#\$}"); for v in "${vraw[@]}"; do raw+=("\$$v"); done
-    \\    elif [[ "$cmd" =~ ^(cd|pushd|rmdir|z)$ ]]; then
-    \\        is_file=0; mapfile -t raw < <(fuzzy_expand_path "$unesc" 1)
-    \\    else
-    \\        mapfile -t raw < <(fuzzy_expand_path "$unesc" 0)
-    \\    fi
-    \\fi
-    \\
     \\declare -A seen=()
     \\for m in "${raw[@]}"; do
     \\    [[ -z "$m" ]] && continue
-    \\    (( is_file )) && [[ "$m" != */ && -d "$m" ]] && m+="/"
+    \\    [[ "$m" != */ && -d "$m" ]] && m+="/"
     \\    if [[ -z "${seen["$m"]:-}" ]]; then
     \\        seen["$m"]=1
     \\        printf "%s\n" "$m"
     \\    fi
     \\done
 ;
-const posix = std.posix;
 
 pub const BUILTINS_AND_KEYWORDS = [_][]const u8{
     "alias", "bg", "bind", "break", "builtin", "caller", "case", "cd",
@@ -257,89 +103,167 @@ pub const COMMON_COMMANDS = [_][]const u8{
     "vi",         "vim",        "wc",         "which",      "zig",
 };
 
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.startsWithIgnoreCase(haystack[i..], needle)) return true;
+    }
+    return false;
+}
+
+pub fn fuzzyMatchIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    var h_idx: usize = 0;
+    var n_idx: usize = 0;
+    while (h_idx < haystack.len and n_idx < needle.len) {
+        if (std.ascii.toLower(haystack[h_idx]) == std.ascii.toLower(needle[n_idx])) n_idx += 1;
+        h_idx += 1;
+    }
+    return n_idx == needle.len;
+}
+
+pub fn toCStr(buf: *[4096:0]u8, s: []const u8) ?[:0]const u8 {
+    if (s.len >= buf.len) return null;
+    @memcpy(buf[0..s.len], s);
+    buf[s.len] = 0;
+    return buf[0..s.len :0];
+}
+
+pub fn getProcEnviron(key: []const u8, out_buf: []u8) ?[]const u8 {
+    const fd = posix.system.open("/proc/self/environ", posix.system.O{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (posix.errno(fd) != .SUCCESS) return null;
+    defer _ = posix.system.close(@intCast(fd));
+
+    var buf: [65536]u8 = undefined;
+    var total_read: usize = 0;
+    while (total_read < buf.len) {
+        const rc = posix.system.read(@intCast(fd), buf[total_read..].ptr, buf.len - total_read);
+        if (posix.errno(rc) != .SUCCESS or rc == 0) break;
+        total_read += @intCast(rc);
+    }
+    if (total_read == 0) return null;
+
+    var it = std.mem.splitScalar(u8, buf[0..total_read], 0);
+    while (it.next()) |entry| {
+        if (std.mem.startsWith(u8, entry, key) and entry.len > key.len and entry[key.len] == '=') {
+            const val = entry[key.len + 1 ..];
+            if (val.len <= out_buf.len) {
+                @memcpy(out_buf[0..val.len], val);
+                return out_buf[0..val.len];
+            }
+        }
+    }
+    return null;
+}
+
+pub fn getEnv(env_obj: std.process.Environ, key: []const u8) ?[]const u8 {
+    return env_obj.getPosix(key);
+}
+
+pub const DirEntry = struct {
+    name: []const u8,
+    d_type: u8,
+};
+
+pub fn iterateDir(fd: posix.fd_t, buf: *[8192]u8, ctx: anytype, comptime cb: fn (@TypeOf(ctx), DirEntry) bool) void {
+    while (true) {
+        const rc = posix.system.getdents64(fd, buf, buf.len);
+        if (posix.errno(rc) != .SUCCESS or rc == 0) break;
+        const n: usize = @intCast(rc);
+        var pos: usize = 0;
+        while (pos < n) {
+            if (pos + 19 > n) break;
+            const reclen = std.mem.readInt(u16, buf[pos + 16 .. pos + 18][0..2], .little);
+            if (reclen == 0 or pos + reclen > n) break;
+            const d_type = buf[pos + 18];
+            const name_start = pos + 19;
+            var name_end = name_start;
+            while (name_end < pos + reclen and buf[name_end] != 0) : (name_end += 1) {}
+            const name = buf[name_start..name_end];
+            pos += reclen;
+            if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+            if (!cb(ctx, .{ .name = name, .d_type = d_type })) return;
+        }
+    }
+}
+
+fn comparePrefix(target: []const u8, item: []const u8) std.math.Order {
+    return std.mem.order(u8, target, item);
+}
+
 pub const CommandCache = struct {
     allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     commands: std.array_list.AlignedManaged([]const u8, null),
     loaded: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) CommandCache {
         return .{
             .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
             .commands = std.array_list.AlignedManaged([]const u8, null).init(allocator),
             .loaded = false,
         };
     }
 
     pub fn deinit(self: *CommandCache) void {
-        for (self.commands.items) |cmd| {
-            self.allocator.free(cmd);
-        }
         self.commands.deinit();
+        self.arena.deinit();
     }
 
-    pub fn load(self: *CommandCache, environ: std.process.Environ) void {
+    pub fn contains(self: *const CommandCache, target: []const u8) bool {
+        const idx = std.sort.lowerBound([]const u8, self.commands.items, target, comparePrefix);
+        return idx < self.commands.items.len and std.mem.eql(u8, self.commands.items[idx], target);
+    }
+
+    pub fn load(self: *CommandCache, env_obj: std.process.Environ) void {
         if (self.loaded) return;
         self.loaded = true;
 
+        const arena_alloc = self.arena.allocator();
         var set = std.StringHashMap(void).init(self.allocator);
         defer set.deinit();
 
         for (BUILTINS_AND_KEYWORDS) |kw| {
-            const dup = self.allocator.dupe(u8, kw) catch continue;
-            set.put(dup, {}) catch {
-                self.allocator.free(dup);
-                continue;
-            };
-        }
-
-        const path_env = environ.getPosix("PATH") orelse "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-        var it = std.mem.splitScalar(u8, path_env, ':');
-        var buf: [8192]u8 = undefined;
-
-        while (it.next()) |dir_path| {
-            if (dir_path.len == 0 or dir_path.len >= 4000) continue;
-            var dir_z: [4096:0]u8 = undefined;
-            @memcpy(dir_z[0..dir_path.len], dir_path);
-            dir_z[dir_path.len] = 0;
-
-            const fd = posix.system.open(&dir_z, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
-            if (posix.errno(fd) != .SUCCESS) continue;
-            defer _ = posix.system.close(@intCast(fd));
-
-            while (true) {
-                const rc = posix.system.getdents64(@intCast(fd), &buf, buf.len);
-                if (posix.errno(rc) != .SUCCESS or rc == 0) break;
-                const n: usize = @intCast(rc);
-                var pos: usize = 0;
-                while (pos < n) {
-                    if (pos + 19 > n) break;
-                    const reclen = std.mem.readInt(u16, buf[pos + 16 .. pos + 18][0..2], .little);
-                    if (reclen == 0 or pos + reclen > n) break;
-                    const d_type = buf[pos + 18];
-                    const name_start = pos + 19;
-                    var name_end = name_start;
-                    while (name_end < pos + reclen and buf[name_end] != 0) : (name_end += 1) {}
-                    const name = buf[name_start..name_end];
-                    if (name.len > 0 and name[0] != '.' and (d_type == 8 or d_type == 10 or d_type == 0)) {
-                        if (!set.contains(name)) {
-                            const name_dup = self.allocator.dupe(u8, name) catch break;
-                            set.put(name_dup, {}) catch {
-                                self.allocator.free(name_dup);
-                                break;
-                            };
-                        }
-                    }
-                    pos += reclen;
-                }
+            if (!set.contains(kw)) {
+                const dup = arena_alloc.dupe(u8, kw) catch continue;
+                set.put(dup, {}) catch continue;
+                self.commands.append(dup) catch continue;
             }
         }
 
-        var key_it = set.keyIterator();
-        while (key_it.next()) |key_ptr| {
-            self.commands.append(key_ptr.*) catch {
-                self.allocator.free(key_ptr.*);
-                continue;
-            };
+        var path_buf: [4096]u8 = undefined;
+        const path_env = getEnv(env_obj, "PATH") orelse getProcEnviron("PATH", &path_buf) orelse "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+        var it = std.mem.splitScalar(u8, path_env, ':');
+        var buf: [8192]u8 = undefined;
+
+        const Ctx = struct {
+            cache: *CommandCache,
+            set: *std.StringHashMap(void),
+            a: std.mem.Allocator,
+
+            fn onEntry(c: @This(), entry: DirEntry) bool {
+                if (entry.name[0] != '.' and (entry.d_type == 8 or entry.d_type == 10 or entry.d_type == 0)) {
+                    if (!c.set.contains(entry.name)) {
+                        const dup = c.a.dupe(u8, entry.name) catch return false;
+                        c.set.put(dup, {}) catch return false;
+                        c.cache.commands.append(dup) catch return false;
+                    }
+                }
+                return true;
+            }
+        };
+
+        while (it.next()) |dir_path| {
+            var dir_z: [4096:0]u8 = undefined;
+            const path_z = toCStr(&dir_z, dir_path) orelse continue;
+            const fd = posix.system.open(path_z.ptr, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+            if (posix.errno(fd) != .SUCCESS) continue;
+            defer _ = posix.system.close(@intCast(fd));
+
+            iterateDir(@intCast(fd), &buf, Ctx{ .cache = self, .set = &set, .a = arena_alloc }, Ctx.onEntry);
         }
 
         std.mem.sort([]const u8, self.commands.items, {}, struct {
@@ -352,28 +276,23 @@ pub const CommandCache = struct {
     pub fn findMatch(self: *const CommandCache, prefix: []const u8) ?[]const u8 {
         if (prefix.len == 0) return null;
 
-        // 1. Check high-priority common commands
         for (COMMON_COMMANDS) |cc| {
-            if (std.mem.startsWith(u8, cc, prefix) and cc.len > prefix.len) {
-                for (self.commands.items) |cmd| {
-                    if (std.mem.eql(u8, cmd, cc)) return cc;
-                }
-            }
+            if (std.mem.startsWith(u8, cc, prefix) and cc.len > prefix.len and self.contains(cc)) return cc;
         }
 
-        // 2. Shortest match among all available commands (with alphabetical tie-break)
+        const idx = std.sort.lowerBound([]const u8, self.commands.items, prefix, comparePrefix);
         var best_match: ?[]const u8 = null;
         var best_len: usize = std.math.maxInt(usize);
 
-        for (self.commands.items) |cmd| {
-            if (std.mem.startsWith(u8, cmd, prefix) and cmd.len > prefix.len) {
-                if (cmd.len < best_len) {
-                    best_len = cmd.len;
-                    best_match = cmd;
-                }
+        var i = idx;
+        while (i < self.commands.items.len) : (i += 1) {
+            const cmd = self.commands.items[i];
+            if (!std.mem.startsWith(u8, cmd, prefix)) break;
+            if (cmd.len > prefix.len and cmd.len < best_len) {
+                best_len = cmd.len;
+                best_match = cmd;
             }
         }
-
         return best_match;
     }
 };
@@ -421,10 +340,7 @@ pub fn getCommandPositionInfo(line: []const u8) CommandPositionInfo {
     }
 
     const seg = line[last_sep_end..];
-    const WordItem = struct {
-        slice: []const u8,
-        has_trailing_space: bool,
-    };
+    const WordItem = struct { slice: []const u8, has_trailing_space: bool };
     var words_buf: [64]WordItem = undefined;
     var words_len: usize = 0;
 
@@ -456,22 +372,15 @@ pub fn getCommandPositionInfo(line: []const u8) CommandPositionInfo {
                 in_double_quote = !in_double_quote;
                 continue;
             }
-            if (!in_single_quote and !in_double_quote) {
-                if (sc == ' ' or sc == '\t') break;
-            }
+            if (!in_single_quote and !in_double_quote and (sc == ' ' or sc == '\t')) break;
         }
         const w_end = seg_i;
         const trailing_space = (seg_i < seg.len and (seg[seg_i] == ' ' or seg[seg_i] == '\t'));
-        words_buf[words_len] = .{
-            .slice = seg[w_start..w_end],
-            .has_trailing_space = trailing_space,
-        };
+        words_buf[words_len] = .{ .slice = seg[w_start..w_end], .has_trailing_space = trailing_space };
         words_len += 1;
     }
 
-    if (words_len == 0) {
-        return .{ .is_command_position = true, .prefix = "" };
-    }
+    if (words_len == 0) return .{ .is_command_position = true, .prefix = "" };
 
     const WRAPPERS = [_][]const u8{
         "sudo", "doas", "env", "nohup", "time", "watch", "xargs", "which",
@@ -488,15 +397,12 @@ pub fn getCommandPositionInfo(line: []const u8) CommandPositionInfo {
 
         if (prev_was_opt_with_arg) {
             prev_was_opt_with_arg = false;
-            if (is_last) {
-                return .{ .is_command_position = false, .prefix = w };
-            }
+            if (is_last) return .{ .is_command_position = false, .prefix = w };
             word_idx += 1;
             continue;
         }
 
         const is_env = (std.mem.indexOfScalar(u8, w, '=') != null and w[0] != '-');
-
         var is_wrapper = false;
         for (WRAPPERS) |wr| {
             if (std.mem.eql(u8, w, wr)) {
@@ -506,17 +412,13 @@ pub fn getCommandPositionInfo(line: []const u8) CommandPositionInfo {
         }
 
         if (is_wrapper or is_env) {
-            if (is_last) {
-                return .{ .is_command_position = true, .prefix = w };
-            }
+            if (is_last) return .{ .is_command_position = true, .prefix = w };
             word_idx += 1;
             continue;
         }
 
         if (w.len > 0 and w[0] == '-' and word_idx > 0) {
-            if (is_last) {
-                return .{ .is_command_position = false, .prefix = w };
-            }
+            if (is_last) return .{ .is_command_position = false, .prefix = w };
             if (std.mem.eql(u8, w, "-u") or std.mem.eql(u8, w, "-g") or std.mem.eql(u8, w, "-o") or
                 std.mem.eql(u8, w, "-C") or std.mem.eql(u8, w, "-n") or std.mem.eql(u8, w, "-E"))
             {
@@ -526,15 +428,226 @@ pub fn getCommandPositionInfo(line: []const u8) CommandPositionInfo {
             continue;
         }
 
-        // Actual command word
-        if (is_last) {
-            return .{ .is_command_position = true, .prefix = w };
-        } else {
-            return .{ .is_command_position = false, .prefix = w };
-        }
+        return .{ .is_command_position = is_last, .prefix = w };
     }
 
     return .{ .is_command_position = false, .prefix = "" };
+}
+
+fn isDirEntry(dir_fd: posix.fd_t, name: []const u8, d_type: u8) bool {
+    if (d_type == 4) return true;
+    if (d_type == 8) return false;
+    var name_z: [4096:0]u8 = undefined;
+    const path_z = toCStr(&name_z, name) orelse return false;
+    const test_fd = posix.system.openat(dir_fd, path_z.ptr, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (posix.errno(test_fd) == .SUCCESS) {
+        _ = posix.system.close(@intCast(test_fd));
+        return true;
+    }
+    return false;
+}
+
+pub fn expandPathNative(
+    allocator: std.mem.Allocator,
+    environ: std.process.Environ,
+    candidates: *std.array_list.AlignedManaged([]const u8, null),
+    raw_path: []const u8,
+    dirs_only: bool,
+) void {
+    if (raw_path.len == 0 and !dirs_only) return;
+
+    var unesc_buf: [4096]u8 = undefined;
+    var unesc_len: usize = 0;
+    var ui: usize = 0;
+    while (ui < raw_path.len and unesc_len < unesc_buf.len) : (ui += 1) {
+        if (raw_path[ui] == '\\' and ui + 1 < raw_path.len) ui += 1;
+        unesc_buf[unesc_len] = raw_path[ui];
+        unesc_len += 1;
+    }
+    const unescaped_path = unesc_buf[0..unesc_len];
+
+    var home_buf: [512]u8 = undefined;
+    const home = getEnv(environ, "HOME") orelse getProcEnviron("HOME", &home_buf) orelse "/";
+    var path_to_expand = unescaped_path;
+    var root_dir: []const u8 = ".";
+    var disp_prefix: []const u8 = "";
+
+    if (std.mem.startsWith(u8, path_to_expand, "~/")) {
+        disp_prefix = "~/";
+        path_to_expand = path_to_expand[2..];
+        root_dir = home;
+    } else if (std.mem.eql(u8, path_to_expand, "~")) {
+        addCandidate(allocator, candidates, "~/");
+        return;
+    } else if (std.mem.startsWith(u8, path_to_expand, "/")) {
+        disp_prefix = "/";
+        path_to_expand = path_to_expand[1..];
+        root_dir = "/";
+    }
+
+    var root_buf: [4096]u8 = undefined;
+    @memcpy(root_buf[0..root_dir.len], root_dir);
+    var root_len = root_dir.len;
+
+    var disp_buf: [4096]u8 = undefined;
+    @memcpy(disp_buf[0..disp_prefix.len], disp_prefix);
+    var disp_len = disp_prefix.len;
+
+    while (true) {
+        if (std.mem.startsWith(u8, path_to_expand, "../")) {
+            if (disp_len + 3 <= disp_buf.len) {
+                @memcpy(disp_buf[disp_len .. disp_len + 3], "../");
+                disp_len += 3;
+            }
+            path_to_expand = path_to_expand[3..];
+            if (root_len + 3 <= root_buf.len) {
+                @memcpy(root_buf[root_len .. root_len + 3], "/..");
+                root_len += 3;
+            }
+        } else if (std.mem.eql(u8, path_to_expand, "..")) {
+            if (disp_len + 3 <= disp_buf.len) {
+                @memcpy(disp_buf[disp_len .. disp_len + 3], "../");
+                disp_len += 3;
+            }
+            addCandidate(allocator, candidates, disp_buf[0..disp_len]);
+            return;
+        } else if (std.mem.startsWith(u8, path_to_expand, "./")) {
+            if (disp_len + 2 <= disp_buf.len) {
+                @memcpy(disp_buf[disp_len .. disp_len + 2], "./");
+                disp_len += 2;
+            }
+            path_to_expand = path_to_expand[2..];
+            if (root_len + 2 <= root_buf.len) {
+                @memcpy(root_buf[root_len .. root_len + 2], "/.");
+                root_len += 2;
+            }
+        } else if (std.mem.eql(u8, path_to_expand, ".")) {
+            if (disp_len + 2 <= disp_buf.len) {
+                @memcpy(disp_buf[disp_len .. disp_len + 2], "./");
+                disp_len += 2;
+            }
+            addCandidate(allocator, candidates, disp_buf[0..disp_len]);
+            return;
+        } else {
+            break;
+        }
+    }
+
+    var segments_list = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+    defer segments_list.deinit();
+
+    if (path_to_expand.len == 0) {
+        segments_list.append("") catch return;
+    } else {
+        var it = std.mem.splitScalar(u8, path_to_expand, '/');
+        while (it.next()) |s| segments_list.append(s) catch return;
+    }
+
+    const PathCandidate = struct {
+        disk_path: []const u8,
+        disp_path: []const u8,
+        score: u32,
+        is_dir: bool,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var current_paths = std.array_list.AlignedManaged(PathCandidate, null).init(a);
+    const init_disk = a.dupe(u8, root_buf[0..root_len]) catch return;
+    const init_disp = a.dupe(u8, disp_buf[0..disp_len]) catch return;
+    current_paths.append(.{ .disk_path = init_disk, .disp_path = init_disp, .score = 0, .is_dir = true }) catch return;
+
+    var dent_buf: [8192]u8 = undefined;
+
+    for (segments_list.items, 0..) |seg, seg_idx| {
+        const is_last = (seg_idx == segments_list.items.len - 1);
+        var next_paths = std.array_list.AlignedManaged(PathCandidate, null).init(a);
+
+        for (current_paths.items) |item| {
+            if (!item.is_dir) continue;
+
+            var disk_z: [4096:0]u8 = undefined;
+            const path_z = toCStr(&disk_z, item.disk_path) orelse continue;
+
+            const fd = posix.system.open(path_z.ptr, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+            if (posix.errno(fd) != .SUCCESS) continue;
+            defer _ = posix.system.close(@intCast(fd));
+
+            const ScanCtx = struct {
+                fd_cast: posix.fd_t,
+                item: PathCandidate,
+                seg: []const u8,
+                seg_idx: usize,
+                unescaped_path: []const u8,
+                dirs_only: bool,
+                is_last: bool,
+                a_alloc: std.mem.Allocator,
+                next_paths_ptr: *std.array_list.AlignedManaged(PathCandidate, null),
+
+                fn onEntry(c: @This(), entry: DirEntry) bool {
+                    const name = entry.name;
+                    if (name[0] != '.' or (c.seg.len > 0 and c.seg[0] == '.') or (c.seg.len == 0 and c.seg_idx == 0 and c.unescaped_path.len > 0 and c.unescaped_path[0] == '.')) {
+                        const is_dir = isDirEntry(c.fd_cast, name, entry.d_type);
+                        if (!c.dirs_only or !c.is_last or is_dir) {
+                            var match_score: ?u32 = null;
+                            if (c.seg.len == 0 or std.mem.eql(u8, name, c.seg)) {
+                                match_score = 0;
+                            } else if (std.ascii.startsWithIgnoreCase(name, c.seg)) {
+                                match_score = 1;
+                            } else if (containsIgnoreCase(name, c.seg)) {
+                                match_score = 2;
+                            } else if (fuzzyMatchIgnoreCase(name, c.seg)) {
+                                match_score = 3;
+                            }
+
+                            if (match_score) |ms| {
+                                const total_score = c.item.score * 10 + ms;
+                                const next_disp = if (is_dir)
+                                    std.fmt.allocPrint(c.a_alloc, "{s}{s}/", .{ c.item.disp_path, name }) catch return false
+                                else
+                                    std.fmt.allocPrint(c.a_alloc, "{s}{s}", .{ c.item.disp_path, name }) catch return false;
+                                const next_disk = std.fmt.allocPrint(c.a_alloc, "{s}/{s}", .{ c.item.disk_path, name }) catch return false;
+
+                                c.next_paths_ptr.append(.{
+                                    .disk_path = next_disk,
+                                    .disp_path = next_disp,
+                                    .score = total_score,
+                                    .is_dir = is_dir,
+                                }) catch return false;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            };
+
+            iterateDir(@intCast(fd), &dent_buf, ScanCtx{
+                .fd_cast = @intCast(fd),
+                .item = item,
+                .seg = seg,
+                .seg_idx = seg_idx,
+                .unescaped_path = unescaped_path,
+                .dirs_only = dirs_only,
+                .is_last = is_last,
+                .a_alloc = a,
+                .next_paths_ptr = &next_paths,
+            }, ScanCtx.onEntry);
+        }
+
+        current_paths = next_paths;
+        if (current_paths.items.len == 0) break;
+    }
+
+    std.mem.sort(PathCandidate, current_paths.items, {}, struct {
+        fn lessThan(_: void, p1: PathCandidate, p2: PathCandidate) bool {
+            if (p1.score != p2.score) return p1.score < p2.score;
+            return std.mem.order(u8, p1.disp_path, p2.disp_path) == .lt;
+        }
+    }.lessThan);
+
+    for (current_paths.items) |c| addCandidate(allocator, candidates, c.disp_path);
 }
 
 pub fn findPathMatch(environ: std.process.Environ, raw_path: []const u8, result_buf: []u8) ?[]const u8 {
@@ -553,109 +666,97 @@ pub fn findPathMatch(environ: std.process.Environ, raw_path: []const u8, result_
 
     if (dir_part.len > 0) {
         if (std.mem.startsWith(u8, dir_part, "~/")) {
-            const home = environ.getPosix("HOME") orelse "/";
+            var home_buf: [512]u8 = undefined;
+            const home = getEnv(environ, "HOME") orelse getProcEnviron("HOME", &home_buf) orelse "/";
             resolved_dir = std.fmt.bufPrint(&resolved_dir_buf, "{s}/{s}", .{ home, dir_part[2..] }) catch return null;
         } else if (std.mem.eql(u8, dir_part, "~")) {
-            resolved_dir = environ.getPosix("HOME") orelse "/";
+            var home_buf: [512]u8 = undefined;
+            resolved_dir = getEnv(environ, "HOME") orelse getProcEnviron("HOME", &home_buf) orelse "/";
         } else {
             resolved_dir = dir_part;
         }
     }
 
-    var path_to_open_buf: [4096:0]u8 = undefined;
     var path_to_open = resolved_dir;
-    if (path_to_open.len > 1 and path_to_open[path_to_open.len - 1] == '/') {
-        path_to_open = path_to_open[0 .. path_to_open.len - 1];
-    }
-    if (path_to_open.len >= path_to_open_buf.len) return null;
-    @memcpy(path_to_open_buf[0..path_to_open.len], path_to_open);
-    path_to_open_buf[path_to_open.len] = 0;
+    if (path_to_open.len > 1 and path_to_open[path_to_open.len - 1] == '/') path_to_open = path_to_open[0 .. path_to_open.len - 1];
 
-    const fd = posix.system.open(&path_to_open_buf, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    var path_to_open_buf: [4096:0]u8 = undefined;
+    const path_z = toCStr(&path_to_open_buf, path_to_open) orelse return null;
+
+    const fd = posix.system.open(path_z.ptr, posix.system.O{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }, 0);
     if (posix.errno(fd) != .SUCCESS) return null;
     defer _ = posix.system.close(@intCast(fd));
 
-    var dent_buf: [8192]u8 = undefined;
-    var best_match_buf: [512]u8 = undefined;
-    var best_match_len: usize = 0;
-    var best_match_is_dir = false;
-    var exact_prefix_found = false;
+    const MatchCtx = struct {
+        fd_cast: posix.fd_t,
+        file_prefix: []const u8,
+        best_match_buf: *[512]u8,
+        best_match_len: usize = 0,
+        best_match_is_dir: bool = false,
+        exact_prefix_found: bool = false,
 
-    while (true) {
-        const rc = posix.system.getdents64(@intCast(fd), &dent_buf, dent_buf.len);
-        if (posix.errno(rc) != .SUCCESS or rc == 0) break;
-        const n: usize = @intCast(rc);
-        var pos: usize = 0;
-        while (pos < n) {
-            if (pos + 19 > n) break;
-            const reclen = std.mem.readInt(u16, dent_buf[pos + 16 .. pos + 18][0..2], .little);
-            if (reclen == 0 or pos + reclen > n) break;
-            const d_type = dent_buf[pos + 18];
-            const name_start = pos + 19;
-            var name_end = name_start;
-            while (name_end < pos + reclen and dent_buf[name_end] != 0) : (name_end += 1) {}
-            const name = dent_buf[name_start..name_end];
+        fn onEntry(c: *@This(), entry: DirEntry) bool {
+            const name = entry.name;
+            if (name[0] != '.' or (c.file_prefix.len > 0 and c.file_prefix[0] == '.')) {
+                var matches = false;
+                var is_exact = false;
+                if (std.mem.startsWith(u8, name, c.file_prefix) and name.len > c.file_prefix.len) {
+                    matches = true;
+                    is_exact = true;
+                } else if (!c.exact_prefix_found and name.len > c.file_prefix.len and std.ascii.startsWithIgnoreCase(name, c.file_prefix)) {
+                    matches = true;
+                }
 
-            if (name.len > 0 and !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..")) {
-                if (name[0] != '.' or (file_prefix.len > 0 and file_prefix[0] == '.')) {
-                    var matches = false;
-                    var is_exact = false;
-
-                    if (std.mem.startsWith(u8, name, file_prefix) and name.len > file_prefix.len) {
-                        matches = true;
-                        is_exact = true;
-                    } else if (!exact_prefix_found and name.len > file_prefix.len and std.ascii.startsWithIgnoreCase(name, file_prefix)) {
-                        matches = true;
-                    }
-
-                    if (matches) {
-                        const is_dir = (d_type == 4);
-                        if (is_exact and !exact_prefix_found) {
-                            exact_prefix_found = true;
-                            best_match_len = @min(name.len, best_match_buf.len);
-                            @memcpy(best_match_buf[0..best_match_len], name[0..best_match_len]);
-                            best_match_is_dir = is_dir;
-                        } else if (best_match_len == 0 or name.len < best_match_len) {
-                            best_match_len = @min(name.len, best_match_buf.len);
-                            @memcpy(best_match_buf[0..best_match_len], name[0..best_match_len]);
-                            best_match_is_dir = is_dir;
-                        }
+                if (matches) {
+                    const is_dir = isDirEntry(c.fd_cast, name, entry.d_type);
+                    if (is_exact and !c.exact_prefix_found) {
+                        c.exact_prefix_found = true;
+                        c.best_match_len = @min(name.len, c.best_match_buf.len);
+                        @memcpy(c.best_match_buf[0..c.best_match_len], name[0..c.best_match_len]);
+                        c.best_match_is_dir = is_dir;
+                    } else if (c.best_match_len == 0 or name.len < c.best_match_len) {
+                        c.best_match_len = @min(name.len, c.best_match_buf.len);
+                        @memcpy(c.best_match_buf[0..c.best_match_len], name[0..c.best_match_len]);
+                        c.best_match_is_dir = is_dir;
                     }
                 }
             }
-            pos += reclen;
+            return true;
         }
-    }
+    };
 
-    if (best_match_len > file_prefix.len) {
-        const full_match = best_match_buf[0..best_match_len];
+    var best_buf: [512]u8 = undefined;
+    var match_ctx = MatchCtx{
+        .fd_cast = @intCast(fd),
+        .file_prefix = file_prefix,
+        .best_match_buf = &best_buf,
+    };
+    var dent_buf: [8192]u8 = undefined;
+    iterateDir(@intCast(fd), &dent_buf, &match_ctx, MatchCtx.onEntry);
+
+    if (match_ctx.best_match_len > file_prefix.len) {
+        const full_match = best_buf[0..match_ctx.best_match_len];
         const suffix = full_match[file_prefix.len..];
-        var out_len = suffix.len;
-        if (best_match_is_dir and out_len + 1 <= result_buf.len) {
+        const out_len = suffix.len;
+        if (match_ctx.best_match_is_dir and out_len + 1 <= result_buf.len) {
             @memcpy(result_buf[0..out_len], suffix);
             result_buf[out_len] = '/';
-            out_len += 1;
-            return result_buf[0..out_len];
+            return result_buf[0 .. out_len + 1];
         } else if (out_len <= result_buf.len) {
             @memcpy(result_buf[0..out_len], suffix);
             return result_buf[0..out_len];
         }
     }
-
     return null;
 }
 
 pub fn findArgumentPathMatch(environ: std.process.Environ, line: []const u8, result_buf: []u8) ?[]const u8 {
     if (line.len == 0) return null;
     const last_char = line[line.len - 1];
-    if (last_char == ' ' or last_char == '\t' or last_char == '|' or last_char == '&' or last_char == ';') {
-        return null;
-    }
-
+    if (last_char == ' ' or last_char == '\t' or last_char == '|' or last_char == '&' or last_char == ';') return null;
     const start = findCompletionStart(line, line.len);
     const token = line[start..];
     if (token.len == 0) return null;
-
     return findPathMatch(environ, token, result_buf);
 }
 
@@ -666,12 +767,8 @@ pub fn findCompletionStart(line: []const u8, pt: usize) usize {
         if (ch == ' ' or ch == '\t') {
             var bs_count: usize = 0;
             var b: usize = start - 1;
-            while (b > 0 and line[b - 1] == '\\') : (b -= 1) {
-                bs_count += 1;
-            }
-            if (bs_count % 2 == 0) {
-                break;
-            }
+            while (b > 0 and line[b - 1] == '\\') : (b -= 1) bs_count += 1;
+            if (bs_count % 2 == 0) break;
         } else if (ch == '|' or ch == '&' or ch == ';' or ch == '(' or ch == ')' or ch == '<' or ch == '>') {
             break;
         }
@@ -680,31 +777,27 @@ pub fn findCompletionStart(line: []const u8, pt: usize) usize {
     return start;
 }
 
-fn addCandidate(allocator: std.mem.Allocator, candidates: *std.array_list.AlignedManaged([]const u8, null), cand: []const u8) void {
+pub fn addCandidate(allocator: std.mem.Allocator, candidates: *std.array_list.AlignedManaged([]const u8, null), cand: []const u8) void {
     for (candidates.items) |c| {
         if (std.mem.eql(u8, c, cand)) return;
     }
     if (candidates.items.len >= 200) return;
     const dup = allocator.dupe(u8, cand) catch return;
-    candidates.append(dup) catch {
-        allocator.free(dup);
-    };
+    candidates.append(dup) catch allocator.free(dup);
 }
 
-pub fn collectCompletions(allocator: std.mem.Allocator, io: std.Io, candidates: *std.array_list.AlignedManaged([]const u8, null), line: []const u8, pt: usize) void {
+pub fn collectBashCompletions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    candidates: *std.array_list.AlignedManaged([]const u8, null),
+    line: []const u8,
+    pt: usize,
+) void {
     var pt_buf: [32]u8 = undefined;
     const pt_str = std.fmt.bufPrint(&pt_buf, "{d}", .{pt}) catch return;
 
     const res = std.process.run(allocator, io, .{
-        .argv = &[_][]const u8{
-            "bash",
-            "--norc",
-            "-c",
-            BASH_COMPLETION_SCRIPT,
-            "_",
-            line,
-            pt_str,
-        },
+        .argv = &[_][]const u8{ "bash", "--norc", "-c", BASH_COMPLETION_SCRIPT, "_", line, pt_str },
         .stdout_limit = std.Io.Limit.limited(128 * 1024),
     }) catch return;
     defer allocator.free(res.stdout);
@@ -715,10 +808,88 @@ pub fn collectCompletions(allocator: std.mem.Allocator, io: std.Io, candidates: 
     var it = std.mem.splitScalar(u8, res.stdout, '\n');
     while (it.next()) |raw_line| {
         const cand = std.mem.trimEnd(u8, raw_line, "\r");
-        if (cand.len > 0) {
-            addCandidate(allocator, candidates, cand);
+        if (cand.len > 0) addCandidate(allocator, candidates, cand);
+    }
+}
+
+pub fn collectCompletionsWithEnv(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    command_cache_opt: ?*const CommandCache,
+    candidates: *std.array_list.AlignedManaged([]const u8, null),
+    line: []const u8,
+    cursor_pos: usize,
+) void {
+    const pt = @min(cursor_pos, line.len);
+    const start = findCompletionStart(line, pt);
+    const token = line[start..pt];
+    const prefix = line[0..pt];
+
+    if (token.len > 0 and token[0] == '$') {
+        const var_prefix = token[1..];
+        const COMMON_ENV_VARS = [_][]const u8{
+            "HOME", "PATH", "USER", "SHELL", "TERM", "PWD", "EDITOR", "VISUAL", "LANG", "LC_ALL", "TMPDIR", "HOSTNAME", "LOGNAME", "SHLVL", "HISTFILE",
+        };
+        for (COMMON_ENV_VARS) |var_name| {
+            if (std.mem.startsWith(u8, var_name, var_prefix) or std.ascii.startsWithIgnoreCase(var_name, var_prefix)) {
+                if (getEnv(environ, var_name) != null) {
+                    var var_buf: [256]u8 = undefined;
+                    const full_var = std.fmt.bufPrint(&var_buf, "${s}", .{var_name}) catch continue;
+                    addCandidate(allocator, candidates, full_var);
+                }
+            }
+        }
+        if (candidates.items.len > 0) return;
+    }
+
+    const pos_info = getCommandPositionInfo(prefix);
+
+    if (pos_info.is_command_position) {
+        if (token.len > 0 and (token[0] == '.' or token[0] == '/' or token[0] == '~')) {
+            expandPathNative(allocator, environ, candidates, token, false);
+            if (candidates.items.len > 0) return;
+        } else {
+            for (BUILTINS_AND_KEYWORDS) |kw| {
+                if (std.mem.startsWith(u8, kw, token)) addCandidate(allocator, candidates, kw);
+            }
+            if (command_cache_opt) |cc| {
+                const idx = std.sort.lowerBound([]const u8, cc.commands.items, token, comparePrefix);
+                var i = idx;
+                while (i < cc.commands.items.len) : (i += 1) {
+                    const cmd = cc.commands.items[i];
+                    if (!std.mem.startsWith(u8, cmd, token)) break;
+                    addCandidate(allocator, candidates, cmd);
+                }
+            }
+            if (candidates.items.len > 0) return;
         }
     }
+
+    if (std.mem.eql(u8, pos_info.prefix, "cd") or
+        std.mem.eql(u8, pos_info.prefix, "pushd") or
+        std.mem.eql(u8, pos_info.prefix, "rmdir") or
+        std.mem.eql(u8, pos_info.prefix, "z") or
+        std.mem.eql(u8, pos_info.prefix, "builtin cd"))
+    {
+        expandPathNative(allocator, environ, candidates, token, true);
+        if (candidates.items.len > 0) return;
+    }
+
+    collectBashCompletions(allocator, io, candidates, line, pt);
+    if (candidates.items.len > 0) return;
+
+    expandPathNative(allocator, environ, candidates, token, false);
+}
+
+pub fn collectCompletions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    candidates: *std.array_list.AlignedManaged([]const u8, null),
+    line: []const u8,
+    pt: usize,
+) void {
+    collectCompletionsWithEnv(allocator, io, std.process.Environ.empty, null, candidates, line, pt);
 }
 
 test "findCompletionStart" {
@@ -780,6 +951,42 @@ test "collectCompletions fuzzy and case-insensitive navigation" {
             }
         }
         try std.testing.expect(found);
+    }
+
+    {
+        var candidates = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+        defer {
+            for (candidates.items) |c| allocator.free(c);
+            candidates.deinit();
+        }
+        collectCompletions(allocator, io, &candidates, "git ", 4);
+        var found_add = false;
+        var found_commit = false;
+        var found_file = false;
+        for (candidates.items) |c| {
+            const trimmed = std.mem.trimEnd(u8, c, " ");
+            if (std.mem.eql(u8, trimmed, "add")) found_add = true;
+            if (std.mem.eql(u8, trimmed, "commit")) found_commit = true;
+            if (std.mem.eql(u8, c, "build.zig") or std.mem.eql(u8, c, "src/")) found_file = true;
+        }
+        try std.testing.expect(found_add);
+        try std.testing.expect(found_commit);
+        try std.testing.expect(!found_file);
+    }
+
+    {
+        var candidates = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+        defer {
+            for (candidates.items) |c| allocator.free(c);
+            candidates.deinit();
+        }
+        collectCompletions(allocator, io, &candidates, "git ad", 6);
+        var found_add = false;
+        for (candidates.items) |c| {
+            const trimmed = std.mem.trimEnd(u8, c, " ");
+            if (std.mem.eql(u8, trimmed, "add")) found_add = true;
+        }
+        try std.testing.expect(found_add);
     }
 }
 
@@ -865,7 +1072,6 @@ test "CommandCache builtin and PATH matching" {
     cache.load(std.process.Environ.empty);
     try std.testing.expect(cache.commands.items.len > 0);
 
-    // Common command priority matching
     const git_match = cache.findMatch("gi");
     try std.testing.expect(git_match != null);
     try std.testing.expectEqualStrings("git", git_match.?);
@@ -874,7 +1080,6 @@ test "CommandCache builtin and PATH matching" {
     try std.testing.expect(grep_match != null);
     try std.testing.expectEqualStrings("grep", grep_match.?);
 
-    // Builtin matching
     const cd_match = cache.findMatch("c");
     try std.testing.expect(cd_match != null);
 

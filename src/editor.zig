@@ -3,6 +3,8 @@ const posix = std.posix;
 const terminal = @import("terminal.zig");
 const Term = terminal.Term;
 const completion = @import("completion.zig");
+const history_expansion = @import("history_expansion.zig");
+const render = @import("render.zig");
 
 pub fn ArrayList(comptime T: type) type {
     return std.array_list.AlignedManaged(T, null);
@@ -10,11 +12,8 @@ pub fn ArrayList(comptime T: type) type {
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_size: usize) ?[]u8 {
     var path_z: [4096:0]u8 = undefined;
-    if (path.len >= path_z.len) return null;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const fd = posix.system.open(&path_z, posix.system.O{ .ACCMODE = .RDONLY }, 0);
+    const pz = completion.toCStr(&path_z, path) orelse return null;
+    const fd = posix.system.open(pz.ptr, posix.system.O{ .ACCMODE = .RDONLY }, 0);
     if (posix.errno(fd) != .SUCCESS) return null;
     defer _ = posix.system.close(@intCast(fd));
 
@@ -26,36 +25,29 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_size: u
         const to_read = @min(chunk.len, max_size - list.items.len);
         const rc = posix.system.read(@intCast(fd), &chunk, to_read);
         if (posix.errno(rc) != .SUCCESS or rc == 0) break;
-        const n: usize = @intCast(rc);
-        list.appendSlice(chunk[0..n]) catch break;
+        list.appendSlice(chunk[0..@intCast(rc)]) catch break;
     }
     return list.toOwnedSlice() catch null;
 }
 
 pub fn writeFile(path: []const u8, content: []const u8) !void {
     var path_z: [4096:0]u8 = undefined;
-    if (path.len >= path_z.len) return error.PathTooLong;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const fd = posix.system.open(&path_z, posix.system.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+    const pz = completion.toCStr(&path_z, path) orelse return error.PathTooLong;
+    const fd = posix.system.open(pz.ptr, posix.system.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
     if (posix.errno(fd) != .SUCCESS) return error.OpenFailed;
     defer _ = posix.system.close(@intCast(fd));
 
-    var total_written: usize = 0;
-    while (total_written < content.len) {
-        const rc = posix.system.write(@intCast(fd), content.ptr + total_written, content.len - total_written);
+    var total: usize = 0;
+    while (total < content.len) {
+        const rc = posix.system.write(@intCast(fd), content.ptr + total, content.len - total);
         if (posix.errno(rc) != .SUCCESS or rc == 0) return error.WriteFailed;
-        total_written += @intCast(rc);
+        total += @intCast(rc);
     }
 }
 
 pub fn deleteFile(path: []const u8) void {
     var path_z: [4096:0]u8 = undefined;
-    if (path.len >= path_z.len) return;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-    _ = posix.system.unlink(&path_z);
+    if (completion.toCStr(&path_z, path)) |pz| _ = posix.system.unlink(pz.ptr);
 }
 
 pub const Editor = struct {
@@ -65,6 +57,7 @@ pub const Editor = struct {
     term: *const Term,
     prompt_prefix: []const u8,
     prompt_last_line: []const u8,
+    prompt_vis_w: usize = 0,
     first_render: bool = true,
     buffer: ArrayList(u8),
     cursor_pos: usize = 0,
@@ -79,13 +72,16 @@ pub const Editor = struct {
     candidates: ArrayList([]const u8),
     selected_candidate: usize = 0,
     comp_start_byte: usize = 0,
+    max_candidate_width: usize = 0,
     rendered_menu_rows: usize = 0,
     in_paste: bool = false,
     in_isearch: bool = false,
     isearch_query: ArrayList(u8),
     isearch_match_index: ?usize = null,
-
     render_buf: ArrayList(u8),
+    yank_index: usize = 0,
+    yank_len: usize = 0,
+    last_was_yank: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ, term: *const Term, prompt: []const u8) Editor {
         var prefix: []const u8 = "";
@@ -101,7 +97,7 @@ pub const Editor = struct {
             .term = term,
             .prompt_prefix = prefix,
             .prompt_last_line = last,
-            .first_render = true,
+            .prompt_vis_w = render.getVisibleWidth(last),
             .buffer = ArrayList(u8).init(allocator),
             .history = ArrayList([]const u8).init(allocator),
             .saved_input = ArrayList(u8).init(allocator),
@@ -111,6 +107,11 @@ pub const Editor = struct {
             .command_cache = completion.CommandCache.init(allocator),
             .ghost_buf = ArrayList(u8).init(allocator),
         };
+        ed.buffer.ensureTotalCapacity(256) catch {};
+        ed.history.ensureTotalCapacity(2048) catch {};
+        ed.render_buf.ensureTotalCapacity(4096) catch {};
+        ed.ghost_buf.ensureTotalCapacity(256) catch {};
+        ed.candidates.ensureTotalCapacity(128) catch {};
         ed.command_cache.load(environ);
         return ed;
     }
@@ -132,13 +133,24 @@ pub const Editor = struct {
         const content = readFileAlloc(self.allocator, path, 2 * 1024 * 1024) orelse return;
         defer self.allocator.free(content);
 
-        var lines = ArrayList([]const u8).init(self.allocator);
-        defer lines.deinit();
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
 
-        var it = std.mem.splitScalar(u8, content, '\n');
-        while (it.next()) |line| {
-            var trimmed = std.mem.trim(u8, line, " \t\r\n");
+        var pos: usize = content.len;
+        var count: usize = 0;
+
+        while (pos > 0 and count < 2000) {
+            var line_end = pos;
+            while (line_end > 0 and (content[line_end - 1] == '\n' or content[line_end - 1] == '\r')) : (line_end -= 1) {}
+            if (line_end == 0) break;
+
+            var line_start = line_end;
+            while (line_start > 0 and content[line_start - 1] != '\n' and content[line_start - 1] != '\r') : (line_start -= 1) {}
+            pos = line_start;
+
+            var trimmed = std.mem.trim(u8, content[line_start..line_end], " \t\r\n");
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
             if (trimmed[0] >= '0' and trimmed[0] <= '9') {
                 var idx: usize = 0;
                 while (idx < trimmed.len and (trimmed[idx] >= '0' and trimmed[idx] <= '9')) : (idx += 1) {}
@@ -148,33 +160,18 @@ pub const Editor = struct {
                 }
             }
             if (trimmed.len == 0) continue;
-            const dup = self.allocator.dupe(u8, trimmed) catch continue;
-            lines.append(dup) catch {
-                self.allocator.free(dup);
-                continue;
-            };
-        }
 
-        var i: usize = lines.items.len;
-        var count: usize = 0;
-        while (i > 0 and count < 2000) {
-            i -= 1;
-            const line = lines.items[i];
-            var seen = false;
-            for (self.history.items) |h| {
-                if (std.mem.eql(u8, h, line)) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) {
-                self.history.append(line) catch {
-                    self.allocator.free(line);
+            if (!seen.contains(trimmed)) {
+                const dup = self.allocator.dupe(u8, trimmed) catch continue;
+                seen.put(trimmed, {}) catch {
+                    self.allocator.free(dup);
+                    continue;
+                };
+                self.history.append(dup) catch {
+                    self.allocator.free(dup);
                     continue;
                 };
                 count += 1;
-            } else {
-                self.allocator.free(line);
             }
         }
     }
@@ -183,12 +180,24 @@ pub const Editor = struct {
         self.ghost_suggestion = null;
         self.ghost_buf.clearRetainingCapacity();
         if (self.in_completion or self.in_paste or self.in_isearch) return;
-        if (self.cursor_pos != self.buffer.items.len) return;
-        if (self.buffer.items.len == 0) return;
+        if (self.cursor_pos != self.buffer.items.len or self.buffer.items.len == 0) return;
 
         const input = self.buffer.items;
 
-        // 1. History match (highest priority)
+        if (self.history.items.len > 0 and (input[0] == '^' or std.mem.indexOfScalar(u8, input, '!') != null)) {
+            const exp_res = history_expansion.expandHistory(self.allocator, input, self.history.items, "") catch null;
+            if (exp_res) |res| {
+                defer self.allocator.free(res.expanded);
+                if (res.did_expand and res.err_msg == null and !std.mem.eql(u8, res.expanded, input)) {
+                    if (res.expanded.len > input.len and std.mem.startsWith(u8, res.expanded, input)) {
+                        self.ghost_buf.appendSlice(res.expanded[input.len..]) catch return;
+                        self.ghost_suggestion = self.ghost_buf.items;
+                        return;
+                    }
+                }
+            }
+        }
+
         for (self.history.items) |h| {
             if (std.mem.startsWith(u8, h, input) and h.len > input.len) {
                 self.ghost_suggestion = h[input.len..];
@@ -196,7 +205,6 @@ pub const Editor = struct {
             }
         }
 
-        // 2. Command match (if at command position: start of line, after pipe, &&, ;, etc.)
         const pos_info = completion.getCommandPositionInfo(input);
         if (pos_info.is_command_position and pos_info.prefix.len > 0) {
             if (std.mem.indexOfScalar(u8, pos_info.prefix, '/') != null or std.mem.startsWith(u8, pos_info.prefix, "~")) {
@@ -209,8 +217,7 @@ pub const Editor = struct {
             } else {
                 if (self.command_cache.findMatch(pos_info.prefix)) |full_cmd| {
                     if (full_cmd.len > pos_info.prefix.len) {
-                        const suffix = full_cmd[pos_info.prefix.len..];
-                        self.ghost_buf.appendSlice(suffix) catch return;
+                        self.ghost_buf.appendSlice(full_cmd[pos_info.prefix.len..]) catch return;
                         self.ghost_suggestion = self.ghost_buf.items;
                         return;
                     }
@@ -218,26 +225,32 @@ pub const Editor = struct {
             }
         }
 
-        // 3. File / Directory / Argument match
         var arg_buf: [512]u8 = undefined;
         if (completion.findArgumentPathMatch(self.environ, input, &arg_buf)) |sugg| {
             self.ghost_buf.appendSlice(sugg) catch return;
             self.ghost_suggestion = self.ghost_buf.items;
-            return;
         }
     }
 
     pub fn clearCandidates(self: *Editor) void {
-        for (self.candidates.items) |c| {
-            self.allocator.free(c);
-        }
+        for (self.candidates.items) |c| self.allocator.free(c);
         self.candidates.clearRetainingCapacity();
+        self.max_candidate_width = 0;
     }
 
     pub fn collectCompletions(self: *Editor) void {
         self.clearCandidates();
         self.comp_start_byte = completion.findCompletionStart(self.buffer.items, self.cursor_pos);
-        completion.collectCompletions(self.allocator, self.io, &self.candidates, self.buffer.items, self.cursor_pos);
+        completion.collectCompletionsWithEnv(
+            self.allocator,
+            self.io,
+            self.environ,
+            &self.command_cache,
+            &self.candidates,
+            self.buffer.items,
+            self.cursor_pos,
+        );
+        self.max_candidate_width = render.getMaxCandidateWidth(self.candidates.items);
     }
 
     pub fn insertChar(self: *Editor, cp: u21) !void {
@@ -266,20 +279,29 @@ pub const Editor = struct {
         return step;
     }
 
+    pub fn deleteRange(self: *Editor, start: usize, len: usize) void {
+        if (len == 0 or start >= self.buffer.items.len) return;
+        const actual_len = @min(len, self.buffer.items.len - start);
+        const tail_start = start + actual_len;
+        const tail_len = self.buffer.items.len - tail_start;
+        if (tail_len > 0) {
+            std.mem.copyForwards(u8, self.buffer.items[start .. start + tail_len], self.buffer.items[tail_start .. tail_start + tail_len]);
+        }
+        self.buffer.shrinkRetainingCapacity(self.buffer.items.len - actual_len);
+    }
+
     pub fn deleteBackward(self: *Editor) void {
         const step = self.utf8StepBack(self.cursor_pos);
         if (step == 0) return;
         const start = self.cursor_pos - step;
-        var i: usize = 0;
-        while (i < step) : (i += 1) _ = self.buffer.orderedRemove(start);
+        self.deleteRange(start, step);
         self.cursor_pos = start;
     }
 
     pub fn deleteForward(self: *Editor) void {
         const step = self.utf8StepForward(self.cursor_pos);
         if (step == 0) return;
-        var i: usize = 0;
-        while (i < step) : (i += 1) _ = self.buffer.orderedRemove(self.cursor_pos);
+        self.deleteRange(self.cursor_pos, step);
     }
 
     pub fn killWordBackward(self: *Editor) void {
@@ -288,8 +310,7 @@ pub const Editor = struct {
         while (p > 0 and (self.buffer.items[p - 1] == ' ' or self.buffer.items[p - 1] == '\t')) : (p -= 1) {}
         while (p > 0 and self.buffer.items[p - 1] != ' ' and self.buffer.items[p - 1] != '\t') : (p -= 1) {}
         const count = self.cursor_pos - p;
-        var i: usize = 0;
-        while (i < count) : (i += 1) _ = self.buffer.orderedRemove(p);
+        self.deleteRange(p, count);
         self.cursor_pos = p;
     }
 
@@ -299,9 +320,7 @@ pub const Editor = struct {
 
     pub fn killLineToStart(self: *Editor) void {
         if (self.cursor_pos == 0) return;
-        const count = self.cursor_pos;
-        var i: usize = 0;
-        while (i < count) : (i += 1) _ = self.buffer.orderedRemove(0);
+        self.deleteRange(0, self.cursor_pos);
         self.cursor_pos = 0;
     }
 
@@ -310,9 +329,7 @@ pub const Editor = struct {
         var p = self.cursor_pos;
         while (p < self.buffer.items.len and (self.buffer.items[p] == ' ' or self.buffer.items[p] == '\t')) : (p += 1) {}
         while (p < self.buffer.items.len and self.buffer.items[p] != ' ' and self.buffer.items[p] != '\t') : (p += 1) {}
-        const count = p - self.cursor_pos;
-        var i: usize = 0;
-        while (i < count) : (i += 1) _ = self.buffer.orderedRemove(self.cursor_pos);
+        self.deleteRange(self.cursor_pos, p - self.cursor_pos);
     }
 
     pub fn clearLine(self: *Editor) void {
@@ -321,11 +338,46 @@ pub const Editor = struct {
     }
 
     pub fn moveCursorLeft(self: *Editor) void {
-        const step = self.utf8StepBack(self.cursor_pos);
-        self.cursor_pos -= step;
+        self.cursor_pos -= self.utf8StepBack(self.cursor_pos);
+    }
+
+    pub fn yankLastArg(self: *Editor) void {
+        if (self.history.items.len == 0) return;
+        const target_idx = (if (self.last_was_yank) self.yank_index else 0) % self.history.items.len;
+
+        if (history_expansion.getLastArg(self.allocator, self.history.items[target_idx]) catch null) |arg| {
+            defer self.allocator.free(arg);
+            if (self.last_was_yank and self.yank_len > 0) {
+                const start = self.cursor_pos - self.yank_len;
+                self.deleteRange(start, self.yank_len);
+                self.cursor_pos = start;
+            }
+            self.insertSlice(arg) catch return;
+            self.yank_len = arg.len;
+            self.yank_index = target_idx + 1;
+            self.last_was_yank = true;
+        }
+    }
+
+    pub fn expandHistoryLine(self: *Editor) bool {
+        if (self.history.items.len == 0) return false;
+        const res = history_expansion.expandHistory(self.allocator, self.buffer.items, self.history.items, "") catch return false;
+        defer self.allocator.free(res.expanded);
+
+        if (res.did_expand and res.err_msg == null and !std.mem.eql(u8, res.expanded, self.buffer.items)) {
+            self.buffer.clearRetainingCapacity();
+            self.buffer.appendSlice(res.expanded) catch return false;
+            self.cursor_pos = self.buffer.items.len;
+            return true;
+        }
+        return false;
     }
 
     pub fn acceptGhost(self: *Editor) void {
+        if (self.expandHistoryLine()) {
+            self.ghost_suggestion = null;
+            return;
+        }
         if (self.ghost_suggestion) |sugg| {
             self.buffer.appendSlice(sugg) catch return;
             self.cursor_pos = self.buffer.items.len;
@@ -392,8 +444,7 @@ pub const Editor = struct {
         if (self.rendered_menu_rows > 0) {
             var clear_buf = ArrayList(u8).init(self.allocator);
             defer clear_buf.deinit();
-            var bw = @import("render.zig").BufWriter{ .list = &clear_buf };
-            @import("render.zig").writeClearMenu(&bw, self.rendered_menu_rows) catch {};
+            render.writeClearMenu(&clear_buf, self.rendered_menu_rows) catch {};
             terminal.writeAll(self.term.tty_fd, clear_buf.items);
             self.rendered_menu_rows = 0;
         }
@@ -405,8 +456,7 @@ pub const Editor = struct {
             "nano";
 
         var tmp_buf: [128]u8 = undefined;
-        const pid = posix.system.getpid();
-        const tmp_path = try std.fmt.bufPrint(&tmp_buf, "/tmp/ghost_edit_{d}.sh", .{pid});
+        const tmp_path = try std.fmt.bufPrint(&tmp_buf, "/tmp/ghost_edit_{d}.sh", .{posix.system.getpid()});
 
         var tmp_content = ArrayList(u8).init(self.allocator);
         defer tmp_content.deinit();
@@ -436,9 +486,7 @@ pub const Editor = struct {
                 .stdout = .inherit,
                 .stderr = .inherit,
             }) catch null;
-            if (fallback) |*fb| {
-                _ = fb.wait(self.io) catch {};
-            }
+            if (fallback) |*fb| _ = fb.wait(self.io) catch {};
         }
 
         try term_ptr.resumeRaw();
@@ -499,8 +547,7 @@ pub const Editor = struct {
                         while (true) {
                             const rc = posix.system.read(stdout_file.handle, &buf, buf.len);
                             if (posix.errno(rc) != .SUCCESS or rc == 0) break;
-                            const n: usize = @intCast(rc);
-                            out_list.appendSlice(buf[0..n]) catch break;
+                            out_list.appendSlice(buf[0..@intCast(rc)]) catch break;
                         }
                         _ = posix.system.close(stdout_file.handle);
                         child.stdout = null;
@@ -571,12 +618,8 @@ pub const Editor = struct {
             return;
         }
 
-        var start_idx: usize = 0;
-        if (self.isearch_match_index) |cur| {
-            start_idx = cur;
-        }
-
-        var i: usize = start_idx;
+        const start_idx = if (self.isearch_match_index) |cur| cur else 0;
+        var i = start_idx;
         while (i < self.history.items.len) : (i += 1) {
             if (std.mem.indexOf(u8, self.history.items[i], q)) |_| {
                 self.isearch_match_index = i;
@@ -587,7 +630,6 @@ pub const Editor = struct {
             }
         }
 
-        // Wrap around from start if not found from current
         if (start_idx > 0) {
             i = 0;
             while (i < start_idx) : (i += 1) {
@@ -607,7 +649,7 @@ pub const Editor = struct {
         const q = self.isearch_query.items;
         if (q.len == 0) return;
 
-        const start_idx: usize = if (self.isearch_match_index) |cur| cur + 1 else 0;
+        const start_idx = if (self.isearch_match_index) |cur| cur + 1 else 0;
         var i = start_idx;
         while (i < self.history.items.len) : (i += 1) {
             if (std.mem.indexOf(u8, self.history.items[i], q)) |_| {
@@ -619,7 +661,6 @@ pub const Editor = struct {
             }
         }
 
-        // Wrap around
         i = 0;
         while (i < start_idx and i < self.history.items.len) : (i += 1) {
             if (std.mem.indexOf(u8, self.history.items[i], q)) |_| {
@@ -661,9 +702,8 @@ pub const Editor = struct {
             return;
         }
 
-        const h = self.history.items[self.hist_index.?];
         self.buffer.clearRetainingCapacity();
-        self.buffer.appendSlice(h) catch return;
+        self.buffer.appendSlice(self.history.items[self.hist_index.?]) catch return;
         self.cursor_pos = self.buffer.items.len;
     }
 
@@ -671,9 +711,8 @@ pub const Editor = struct {
         if (self.hist_index == null) return;
         if (self.hist_index.? > 0) {
             self.hist_index.? -= 1;
-            const h = self.history.items[self.hist_index.?];
             self.buffer.clearRetainingCapacity();
-            self.buffer.appendSlice(h) catch return;
+            self.buffer.appendSlice(self.history.items[self.hist_index.?]) catch return;
             self.cursor_pos = self.buffer.items.len;
         } else {
             self.hist_index = null;
@@ -686,16 +725,12 @@ pub const Editor = struct {
     pub fn applySelectedCompletion(self: *Editor, add_space_if_file: bool) void {
         if (self.candidates.items.len == 0) return;
         const cand = self.candidates.items[self.selected_candidate];
-        const tail = self.allocator.dupe(u8, self.buffer.items[self.cursor_pos..]) catch "";
-        defer if (tail.len > 0) self.allocator.free(tail);
-
-        self.buffer.shrinkRetainingCapacity(self.comp_start_byte);
-        self.buffer.appendSlice(cand) catch return;
+        self.deleteRange(self.comp_start_byte, self.cursor_pos - self.comp_start_byte);
+        self.cursor_pos = self.comp_start_byte;
+        self.insertSlice(cand) catch return;
         if (add_space_if_file and cand.len > 0 and cand[cand.len - 1] != '/' and cand[cand.len - 1] != ' ' and cand[cand.len - 1] != '=') {
-            self.buffer.append(' ') catch return;
+            self.insertSlice(" ") catch return;
         }
-        self.cursor_pos = self.buffer.items.len;
-        if (tail.len > 0) self.buffer.appendSlice(tail) catch return;
     }
 };
 
@@ -731,7 +766,6 @@ test "Editor updateGhost command fallback and pipes" {
     var editor = Editor.init(allocator, std.testing.io, std.process.Environ.empty, &term, "> ");
     defer editor.deinit();
 
-    // No history -> command fallback
     try editor.buffer.appendSlice("gi");
     editor.cursor_pos = editor.buffer.items.len;
     editor.updateGhost();
@@ -739,7 +773,6 @@ test "Editor updateGhost command fallback and pipes" {
     try std.testing.expect(editor.ghost_suggestion != null);
     try std.testing.expectEqualStrings("t", editor.ghost_suggestion.?);
 
-    // After pipe
     editor.buffer.clearRetainingCapacity();
     try editor.buffer.appendSlice("cat /etc/hosts | gr");
     editor.cursor_pos = editor.buffer.items.len;
@@ -751,7 +784,6 @@ test "Editor updateGhost command fallback and pipes" {
     editor.acceptGhost();
     try std.testing.expectEqualStrings("cat /etc/hosts | grep", editor.buffer.items);
 
-    // After chain operator &&
     editor.buffer.clearRetainingCapacity();
     try editor.buffer.appendSlice("cd /tmp && mk");
     editor.cursor_pos = editor.buffer.items.len;
@@ -760,7 +792,6 @@ test "Editor updateGhost command fallback and pipes" {
     try std.testing.expect(editor.ghost_suggestion != null);
     try std.testing.expectEqualStrings("dir", editor.ghost_suggestion.?);
 
-    // Argument file path
     editor.buffer.clearRetainingCapacity();
     try editor.buffer.appendSlice("cat src/com");
     editor.cursor_pos = editor.buffer.items.len;
@@ -768,4 +799,40 @@ test "Editor updateGhost command fallback and pipes" {
 
     try std.testing.expect(editor.ghost_suggestion != null);
     try std.testing.expectEqualStrings("pletion.zig", editor.ghost_suggestion.?);
+}
+
+test "Editor expandHistoryLine and yankLastArg" {
+    const allocator = std.testing.allocator;
+    const term = try Term.init();
+    defer @constCast(&term).deinit();
+
+    var editor = Editor.init(allocator, std.testing.io, std.process.Environ.empty, &term, "> ");
+    defer editor.deinit();
+
+    const h1 = try allocator.dupe(u8, "git commit -m \"first commit\" file1.txt");
+    const h2 = try allocator.dupe(u8, "echo hello file2.txt");
+    try editor.history.append(h1);
+    try editor.history.append(h2);
+
+    try editor.buffer.appendSlice("sudo !!");
+    editor.cursor_pos = editor.buffer.items.len;
+    const expanded = editor.expandHistoryLine();
+    try std.testing.expect(expanded);
+    try std.testing.expectEqualStrings("sudo git commit -m \"first commit\" file1.txt", editor.buffer.items);
+
+    editor.buffer.clearRetainingCapacity();
+    try editor.buffer.appendSlice("cat !$");
+    editor.cursor_pos = editor.buffer.items.len;
+    try std.testing.expect(editor.expandHistoryLine());
+    try std.testing.expectEqualStrings("cat file1.txt", editor.buffer.items);
+
+    editor.buffer.clearRetainingCapacity();
+    try editor.buffer.appendSlice("ls ");
+    editor.cursor_pos = editor.buffer.items.len;
+
+    editor.yankLastArg();
+    try std.testing.expectEqualStrings("ls file1.txt", editor.buffer.items);
+
+    editor.yankLastArg();
+    try std.testing.expectEqualStrings("ls file2.txt", editor.buffer.items);
 }
