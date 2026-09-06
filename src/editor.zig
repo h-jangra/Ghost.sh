@@ -504,6 +504,26 @@ pub const Editor = struct {
         return false;
     }
 
+    fn sanitizeCtrlRCommand(allocator: std.mem.Allocator, cmd: []const u8) ![]u8 {
+        var res = ArrayList(u8).init(allocator);
+        errdefer res.deinit();
+
+        var i: usize = 0;
+        while (i < cmd.len) {
+            if (std.mem.startsWith(u8, cmd[i..], "--tty=/dev/tty")) {
+                i += "--tty=/dev/tty".len;
+            } else if (std.mem.startsWith(u8, cmd[i..], "--tty /dev/tty")) {
+                i += "--tty /dev/tty".len;
+            } else if (std.mem.startsWith(u8, cmd[i..], "--tty") and (i + 5 == cmd.len or cmd[i + 5] == ' ' or cmd[i + 5] == '\t')) {
+                i += 5;
+            } else {
+                try res.append(cmd[i]);
+                i += 1;
+            }
+        }
+        return res.toOwnedSlice();
+    }
+
     pub fn historySearchInteractive(self: *Editor) !bool {
         if (self.history.items.len == 0) return false;
 
@@ -515,12 +535,15 @@ pub const Editor = struct {
 
                 var selected_opt: ?[]const u8 = null;
 
+                const clean_cmd = sanitizeCtrlRCommand(self.allocator, cmd) catch cmd;
+                defer if (clean_cmd.ptr != cmd.ptr) self.allocator.free(clean_cmd);
+
                 var child_res = std.process.spawn(self.io, .{
                     .argv = &[_][]const u8{
                         "bash",
                         "--norc",
                         "-c",
-                        "eval \"$GHOST_CTRL_R_COMMAND\"",
+                        clean_cmd,
                         "_",
                         self.buffer.items,
                     },
@@ -836,3 +859,24 @@ test "Editor expandHistoryLine and yankLastArg" {
     editor.yankLastArg();
     try std.testing.expectEqualStrings("ls file2.txt", editor.buffer.items);
 }
+
+test "Editor sanitizeCtrlRCommand" {
+    const allocator = std.testing.allocator;
+
+    const c1 = try Editor.sanitizeCtrlRCommand(allocator, "fzf --height=40% --reverse --scheme=history --tiebreak=index --tty=/dev/tty");
+    defer allocator.free(c1);
+    try std.testing.expectEqualStrings("fzf --height=40% --reverse --scheme=history --tiebreak=index ", c1);
+
+    const c2 = try Editor.sanitizeCtrlRCommand(allocator, "fzf --reverse --tty=/dev/tty");
+    defer allocator.free(c2);
+    try std.testing.expectEqualStrings("fzf --reverse ", c2);
+
+    const c3 = try Editor.sanitizeCtrlRCommand(allocator, "fzf --tty /dev/tty --reverse");
+    defer allocator.free(c3);
+    try std.testing.expectEqualStrings("fzf  --reverse", c3);
+
+    const c4 = try Editor.sanitizeCtrlRCommand(allocator, "fzf --reverse");
+    defer allocator.free(c4);
+    try std.testing.expectEqualStrings("fzf --reverse", c4);
+}
+

@@ -33,7 +33,7 @@ _ghost_readline_hook() {
         prompt_expanded="${PS1@P}"
 
         # Run Zig frontend with full TTY ownership
-        "$_GHOST_BIN" --prompt "$prompt_expanded" --histfile "$hist_file" --output "$tmp_out" </dev/tty >/dev/tty 2>/dev/null
+        "$_GHOST_BIN" --prompt "$prompt_expanded" --histfile "$hist_file" --output "$tmp_out" </dev/tty >/dev/tty 2>/dev/tty
         local status=$?
 
         if (( status == 0 )) && [[ -f "$tmp_out" ]]; then

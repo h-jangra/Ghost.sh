@@ -114,7 +114,7 @@ source ~/.bashrc
 
 | Variable | Purpose | Default | Example |
 | --- | --- | --- | --- |
-| `GHOST_CTRL_R_COMMAND` | Optional command override for `Ctrl`+`R` search | _Unset (uses built-in search)_ | `export GHOST_CTRL_R_COMMAND="fzf --reverse --tty=/dev/tty"` |
+| `GHOST_CTRL_R_COMMAND` | Optional command override for `Ctrl`+`R` search | _Unset (uses built-in search)_ | `export GHOST_CTRL_R_COMMAND="fzf --reverse"` |
 | `HISTFILE` | History file to load | `~/.bash_history` | `export HISTFILE="$HOME/.bash_history"` |
 | `VISUAL` / `EDITOR` | Editor for `Ctrl`+`X` `E` | `nano` (fallback: `vi`) | `export EDITOR="nvim"` |
 | `_GHOST_BIN` | Custom path override for `ghost` binary | Auto-detected adjacent to `ghost.sh` or in `PATH` | `export _GHOST_BIN="/custom/path/ghost"` |
@@ -126,7 +126,7 @@ Pressing `Ctrl`+`R` opens built-in interactive history search (`(reverse-i-searc
 Setting `GHOST_CTRL_R_COMMAND` overrides built-in search with an external filter command (e.g., `fzf`, `peco`, `sk`), streaming history to `stdin` and inserting the selected command into the buffer:
 
 ```bash
-export GHOST_CTRL_R_COMMAND="fzf --height=40% --reverse --scheme=history --tiebreak=index --tty=/dev/tty"
+export GHOST_CTRL_R_COMMAND="fzf --height=40% --reverse --scheme=history --tiebreak=index"
 ```
 
 ## Bash Completion
