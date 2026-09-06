@@ -16,7 +16,11 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    if (comptime @hasField(std.Build, "args")) {
+        if (b.args) |args| run_cmd.addArgs(args);
+    } else {
+        run_cmd.addPassthruArgs();
+    }
     b.step("run", "Run the app").dependOn(&run_cmd.step);
 
     const test_step = b.step("test", "Run unit tests");
