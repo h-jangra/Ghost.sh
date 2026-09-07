@@ -49,6 +49,9 @@ sudo install -Dm755 zig-out/bin/ghost /usr/share/ghost/ghost
 sudo install -Dm644 ghost.sh /usr/share/ghost/ghost.sh
 ```
 
+### [Bash Only Release](https://github.com/h-jangra/ghost.sh/releases/tag/0.4.0)
+Not as smooth as the binary, but available if needed. Source the provided shell files in your `.bashrc`.
+
 ### Shell Setup
 
 Add to your `~/.bashrc` and reload shell:

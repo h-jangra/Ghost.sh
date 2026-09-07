@@ -229,6 +229,34 @@ pub const Editor = struct {
         if (completion.findArgumentPathMatch(self.environ, input, &arg_buf)) |sugg| {
             self.ghost_buf.appendSlice(sugg) catch return;
             self.ghost_suggestion = self.ghost_buf.items;
+            return;
+        }
+
+        var cands = ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (cands.items) |c| self.allocator.free(c);
+            cands.deinit();
+        }
+        completion.collectCompletionsWithEnv(
+            self.allocator,
+            self.io,
+            self.environ,
+            &self.command_cache,
+            &cands,
+            input,
+            self.cursor_pos,
+        );
+
+        if (cands.items.len > 0) {
+            const start = completion.findCompletionStart(input, self.cursor_pos);
+            const token = input[start..self.cursor_pos];
+            for (cands.items) |cand| {
+                if (std.mem.startsWith(u8, cand, token) and cand.len > token.len) {
+                    self.ghost_buf.appendSlice(cand[token.len..]) catch return;
+                    self.ghost_suggestion = self.ghost_buf.items;
+                    return;
+                }
+            }
         }
     }
 
@@ -878,5 +906,24 @@ test "Editor sanitizeCtrlRCommand" {
     const c4 = try Editor.sanitizeCtrlRCommand(allocator, "fzf --reverse");
     defer allocator.free(c4);
     try std.testing.expectEqualStrings("fzf --reverse", c4);
+}
+
+test "Editor updateGhost completion fallback" {
+    const allocator = std.testing.allocator;
+    const term = try Term.init();
+    defer @constCast(&term).deinit();
+
+    var editor = Editor.init(allocator, std.testing.io, std.process.Environ.empty, &term, "> ");
+    defer editor.deinit();
+
+    try editor.buffer.appendSlice("git ad");
+    editor.cursor_pos = editor.buffer.items.len;
+    editor.updateGhost();
+
+    try std.testing.expect(editor.ghost_suggestion != null);
+    try std.testing.expect(std.mem.startsWith(u8, editor.ghost_suggestion.?, "d"));
+
+    editor.acceptGhost();
+    try std.testing.expect(std.mem.startsWith(u8, editor.buffer.items, "git add"));
 }
 
