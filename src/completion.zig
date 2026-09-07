@@ -454,8 +454,6 @@ pub fn expandPathNative(
     raw_path: []const u8,
     dirs_only: bool,
 ) void {
-    if (raw_path.len == 0 and !dirs_only) return;
-
     var unesc_buf: [4096]u8 = undefined;
     var unesc_len: usize = 0;
     var ui: usize = 0;
@@ -987,6 +985,57 @@ test "collectCompletions fuzzy and case-insensitive navigation" {
             if (std.mem.eql(u8, trimmed, "add")) found_add = true;
         }
         try std.testing.expect(found_add);
+    }
+
+    {
+        var candidates = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+        defer {
+            for (candidates.items) |c| allocator.free(c);
+            candidates.deinit();
+        }
+        collectCompletions(allocator, io, &candidates, "nvim ", 5);
+        var found_build = false;
+        var found_src = false;
+        for (candidates.items) |c| {
+            if (std.mem.eql(u8, c, "build.zig")) found_build = true;
+            if (std.mem.eql(u8, c, "src/")) found_src = true;
+        }
+        try std.testing.expect(found_build);
+        try std.testing.expect(found_src);
+    }
+
+    {
+        var candidates = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+        defer {
+            for (candidates.items) |c| allocator.free(c);
+            candidates.deinit();
+        }
+        collectCompletions(allocator, io, &candidates, "cat ", 4);
+        var found_build = false;
+        var found_src = false;
+        for (candidates.items) |c| {
+            if (std.mem.eql(u8, c, "build.zig")) found_build = true;
+            if (std.mem.eql(u8, c, "src/")) found_src = true;
+        }
+        try std.testing.expect(found_build);
+        try std.testing.expect(found_src);
+    }
+
+    {
+        var candidates = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+        defer {
+            for (candidates.items) |c| allocator.free(c);
+            candidates.deinit();
+        }
+        collectCompletions(allocator, io, &candidates, "cd ", 3);
+        var found_src = false;
+        var found_file = false;
+        for (candidates.items) |c| {
+            if (std.mem.eql(u8, c, "src/")) found_src = true;
+            if (std.mem.eql(u8, c, "build.zig")) found_file = true;
+        }
+        try std.testing.expect(found_src);
+        try std.testing.expect(!found_file);
     }
 }
 

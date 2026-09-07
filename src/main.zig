@@ -113,14 +113,27 @@ pub fn main(init: std.process.Init) !void {
             const layout = MenuLayout.calculate(total, render.getMaxCandidateWidth(editor.candidates.items), cols);
 
             switch (key) {
-                .tab, .right => editor.selected_candidate = (editor.selected_candidate + 1) % total,
-                .shift_tab, .left => editor.selected_candidate = (editor.selected_candidate + total - 1) % total,
+                .tab, .right => {
+                    editor.selected_candidate = (editor.selected_candidate + 1) % total;
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
+                    continue;
+                },
+                .shift_tab, .left => {
+                    editor.selected_candidate = (editor.selected_candidate + total - 1) % total;
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
+                    continue;
+                },
                 .down => {
                     if (editor.selected_candidate + layout.num_cols < total) {
                         editor.selected_candidate += layout.num_cols;
                     } else {
                         editor.selected_candidate = (editor.selected_candidate + 1) % total;
                     }
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
+                    continue;
                 },
                 .up => {
                     if (editor.selected_candidate >= layout.num_cols) {
@@ -128,27 +141,27 @@ pub fn main(init: std.process.Init) !void {
                     } else {
                         editor.selected_candidate = (editor.selected_candidate + total - 1) % total;
                     }
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
+                    continue;
                 },
                 .enter => {
                     editor.applySelectedCompletion(true);
                     editor.in_completion = false;
-                },
-                .escape, .ctrl_c => editor.in_completion = false,
-                .paste_start => {
-                    editor.in_completion = false;
-                    editor.in_paste = true;
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
                     continue;
                 },
-                .char => |cp| {
-                    editor.applySelectedCompletion(false);
+                .escape, .ctrl_c => {
                     editor.in_completion = false;
-                    try editor.insertChar(cp);
+                    editor.updateGhost();
+                    try render.renderEditor(&editor);
+                    continue;
                 },
-                else => editor.in_completion = false,
+                else => {
+                    editor.in_completion = false;
+                },
             }
-            editor.updateGhost();
-            try render.renderEditor(&editor);
-            continue;
         }
 
         switch (key) {
